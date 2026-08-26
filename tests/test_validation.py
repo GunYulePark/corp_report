@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import openpyxl
 
 from corp_report.models import FactPack, FinancialFact, MatterFact, PricePoint, SourceDocument
-from corp_report.collector import _optional_int
+from corp_report.collector import _optional_int, standard_account
 from corp_report.gemini_research import _to_matters
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
@@ -60,6 +60,15 @@ class ValidationTests(unittest.TestCase):
     def test_nan_is_not_converted_to_integer(self) -> None:
         self.assertIsNone(_optional_int(nan))
 
+    def test_cost_of_sales_is_not_classified_as_revenue(self) -> None:
+        self.assertEqual(standard_account("매출원가", ""), "매출원가")
+
+    def test_revenue_related_accounts_are_not_total_revenue(self) -> None:
+        self.assertEqual(standard_account("매출채권및기타채권", "ifrs-full_TradeAndOtherCurrentReceivables"), "매출채권및기타채권")
+        self.assertEqual(standard_account("매출총이익", "ifrs-full_GrossProfit"), "매출총이익")
+        self.assertEqual(standard_account("제품매출", "dart_RevenueFromSaleOfGoodsProduct"), "제품매출")
+        self.assertEqual(standard_account("매출액", "ifrs-full_Revenue"), "매출액")
+
     def test_balance_sheet_tie_out(self) -> None:
         results = validate_fact_pack(self._pack())
         self.assertFalse([result for result in results if result["rule"] == "balance_sheet_tie_out"])
@@ -70,7 +79,7 @@ class ValidationTests(unittest.TestCase):
             workbook = openpyxl.load_workbook(output, data_only=False)
             self.assertEqual(len(workbook.sheetnames), 7)
             self.assertTrue(workbook["재무"]["C6"].value.startswith("=IF(COUNTIFS"))
-            self.assertTrue(workbook["본장"]["I21"].value.startswith("='재무'!"))
+            self.assertTrue(workbook["본장"]["I31"].value.startswith("='재무'!"))
             self.assertEqual(workbook["주가 data"]["A1"].value, "거래일")
             self.assertEqual(workbook["주가"]["A13"].value, "거래일")
 

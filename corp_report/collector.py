@@ -77,10 +77,17 @@ def _dart_number(value: object) -> float | None:
 def standard_account(account_name: object, account_id: object) -> str:
     name = _clean(account_name)
     concept = _clean(account_id)
-    if "매출" in name or "revenue" in concept or "sales" in concept:
-        return "매출액"
+    # Specific revenue-cost accounts must be checked before the broad "매출"
+    # condition; otherwise 매출원가 is incorrectly displayed as 매출액.
     if "매출원가" in name or "costofsales" in concept:
         return "매출원가"
+    # Do not treat receivables, gross profit, product-level revenue or cash-flow
+    # disposal proceeds as the total top-line.  The report uses only a disclosed
+    # total revenue concept (or an explicitly named total-revenue account).
+    if any(word in name for word in ("매출채권", "매출총이익")):
+        return str(account_name or "").strip() or "미분류"
+    if concept in {"ifrs-full_revenue", "ifrs-full_salesrevenue", "dart_revenue"} or name in {"매출액", "매출", "영업수익", "수익(매출액)"}:
+        return "매출액"
     if "영업이익" in name or "operatingincome" in concept or "operatingprofit" in concept:
         return "영업이익"
     if "당기순이익" in name or "profitloss" == concept or "netincome" in concept:

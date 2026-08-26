@@ -40,6 +40,78 @@ def _display_market_cap(value: object, date_value: object) -> str:
     return f"약 {value / 1_000_000_000_000:.2f}조원 ({date_value or '기준일 확인 필요'})"
 
 
+def _value_for(pack: FactPack, period: str, account: str) -> float | None:
+    """Return a displayed fact value in 억원 without reading an Excel formula back."""
+    values = [fact.value_eok for fact in pack.financial_facts if fact.period_label == period and fact.standard_account == account and fact.value_eok is not None]
+    if not values:
+        return None
+    return sum(values) if account == "차입금" else values[0]
+
+
+def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def _format_amount(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:,.0f}억원"
+
+
+def _format_ratio(value: float | None) -> str:
+    return "N.M." if value is None else f"{value:.1%}"
+
+
+def _growth_label(previous: float | None, current: float | None, profit_metric: bool = False) -> str:
+    if previous is None or current is None:
+        return "N/A"
+    if profit_metric:
+        if previous < 0 < current:
+            return "흑자전환"
+        if previous > 0 > current:
+            return "적자전환"
+        if previous < 0 and current < 0:
+            return "적자축소" if current > previous else "적자확대"
+    if previous <= 0:
+        return "N.M."
+    return f"{current / previous - 1:+.1%}"
+
+
+def _latest_annual_periods(pack: FactPack) -> tuple[str | None, str | None]:
+    annuals = [period for period in _periods(pack) if period.isdigit()]
+    return (annuals[-1], annuals[-2]) if len(annuals) >= 2 else (annuals[-1], None) if annuals else (None, None)
+
+
+def _financial_commentary(pack: FactPack) -> tuple[str, str, str]:
+    latest_annual, prior_annual = _latest_annual_periods(pack)
+    if not latest_annual:
+        return ("성장성: 최근 연간 재무 수치 확인 필요", "수익성: 최근 연간 재무 수치 확인 필요", "안정성: 최근 연간 재무 수치 확인 필요")
+    revenue = _value_for(pack, latest_annual, "매출액")
+    operating = _value_for(pack, latest_annual, "영업이익")
+    net_income = _value_for(pack, latest_annual, "당기순이익")
+    prior_revenue = _value_for(pack, prior_annual, "매출액") if prior_annual else None
+    prior_operating = _value_for(pack, prior_annual, "영업이익") if prior_annual else None
+    assets = _value_for(pack, latest_annual, "자산총계")
+    liability = _value_for(pack, latest_annual, "부채총계")
+    equity = _value_for(pack, latest_annual, "자본총계")
+    current_assets = _value_for(pack, latest_annual, "유동자산")
+    current_liability = _value_for(pack, latest_annual, "유동부채")
+    borrowings = _value_for(pack, latest_annual, "차입금")
+    cash = _value_for(pack, latest_annual, "현금및현금성자산")
+    interest = _value_for(pack, latest_annual, "이자비용")
+    net_debt = borrowings - cash if borrowings is not None and cash is not None else None
+    coverage = _ratio(operating, interest)
+    growth = f"{latest_annual}년 매출액은 {_format_amount(revenue)}으로 전년 대비 {_growth_label(prior_revenue, revenue)}; 영업이익은 {_format_amount(operating)}으로 {_growth_label(prior_operating, operating, True)}입니다."
+    profitability = f"{latest_annual}년 영업이익률은 {_format_ratio(_ratio(operating, revenue))}, 순이익률은 {_format_ratio(_ratio(net_income, revenue))}입니다."
+    stability = f"{latest_annual}년 말 부채비율 {_format_ratio(_ratio(liability, equity))}, 유동비율 {_format_ratio(_ratio(current_assets, current_liability))}, 순차입금 {_format_amount(net_debt)}, 이자보상배율 {_format_ratio(coverage) if coverage is None else f'{coverage:.1f}배'}입니다."
+    return growth, profitability, stability
+
+
+def _short_text(value: object, limit: int = 120) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else f"{text[:limit - 1]}…"
+
+
 def _safe_sheet_name(name: str) -> str:
     return name.replace("[", "_").replace("]", "_").replace("/", "_")[:31]
 
@@ -173,11 +245,11 @@ def _write_financial_sheet(ws, pack: FactPack) -> None:
             cell = ws.cell(row, col)
             if kind is False:
                 prev = get_column_letter(col - 1)
-                cell.value = "=\"N/A\"" if col == 3 else f'=IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1))'
+                cell.value = "=\"N/A\"" if col == 3 else f'=IF(OR(RIGHT({letter}$4,1)="H",RIGHT({letter}$4,1)="Q"),"N/A",IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1)))'
                 cell.number_format = PERCENT_FORMAT
             elif kind is True:
                 prev = get_column_letter(col - 1)
-                cell.value = "=\"N/A\"" if col == 3 else f'=IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF(AND({prev}{source_row}<0,{letter}{source_row}>0),"흑자전환",IF(AND({prev}{source_row}>0,{letter}{source_row}<0),"적자전환",IF(AND({prev}{source_row}<0,{letter}{source_row}<0),IF({letter}{source_row}>{prev}{source_row},"적자축소","적자확대"),IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1)))))'
+                cell.value = "=\"N/A\"" if col == 3 else f'=IF(OR(RIGHT({letter}$4,1)="H",RIGHT({letter}$4,1)="Q"),"N/A",IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF(AND({prev}{source_row}<0,{letter}{source_row}>0),"흑자전환",IF(AND({prev}{source_row}>0,{letter}{source_row}<0),"적자전환",IF(AND({prev}{source_row}<0,{letter}{source_row}<0),IF({letter}{source_row}>{prev}{source_row},"적자축소","적자확대"),IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1))))))'
                 cell.number_format = PERCENT_FORMAT
             elif kind is None:
                 cell.value = f'=IF(OR(NOT(ISNUMBER({letter}{source_row})),NOT(ISNUMBER({letter}6)),{letter}6<=0),"N.M.",{letter}{source_row}/{letter}6)'
@@ -235,42 +307,74 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         label_cell.fill = PatternFill("solid", fgColor=GREY)
         value_cell.font = Font(name="맑은 고딕", size=10, bold=label in {"상호", "종목코드"})
 
-    business_summary = str(profile.get("business_summary", "")).strip()
-    competencies = ", ".join(str(value) for value in profile.get("core_competencies", []) if str(value).strip())
-    chronology_lines = [f"• {item.get('date', '')}: {item.get('event', '')}" for item in pack.chronology[:3] if item.get("date") and item.get("event")]
-    ws.merge_cells("E12:AH13")
-    growth_strategy = str(profile.get("growth_strategy", "")).strip()
-    ws["E12"] = f"주요 사업: {business_summary or '최신 사업보고서 사업내용 추출 중 또는 확인 필요'}" + (f"\n성장 전략: {growth_strategy}" if growth_strategy else "") + (f"\n핵심 역량: {competencies}" if competencies else "")
-    ws["E12"].alignment = LEFT_WRAP
-    ws["E12"].font = Font(name="맑은 고딕", size=9)
-    ws["E12"].border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
-    ws.row_dimensions[12].height = 30
-    ws.row_dimensions[13].height = 30
-    ws.merge_cells("E14:AH16")
-    ws["E14"] = "핵심 연혁\n" + ("\n".join(chronology_lines) if chronology_lines else "최신 사업보고서 연혁 원문 확인 필요") + "\n(근거: 주요사항 시트의 사업보고서 원문)"
-    ws["E14"].alignment = LEFT_WRAP
-    ws["E14"].font = Font(name="맑은 고딕", size=9)
-    ws["E14"].border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
-    for row in (14, 15, 16):
+    def labeled_row(row: int, label: str, value: object, height: int = 23) -> None:
+        ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=8)
+        ws.merge_cells(start_row=row, start_column=9, end_row=row, end_column=34)
+        label_cell = ws.cell(row, 5, label)
+        value_cell = ws.cell(row, 9, value)
+        label_cell.fill = PatternFill("solid", fgColor=GREY)
+        label_cell.font = HEADER
+        value_cell.font = Font(name="맑은 고딕", size=9)
+        for cell in (label_cell, value_cell):
+            cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            cell.alignment = LEFT_WRAP if cell is value_cell else CENTER
+        ws.row_dimensions[row].height = height
+
+    # Keep each company attribute, capability and timeline entry on its own row.
+    # This preserves an executive-report layout instead of putting a paragraph in
+    # a single merged cell.
+    labeled_row(13, "주요 사업", str(profile.get("business_summary", "")).strip() or "확인 필요", height=42)
+    labeled_row(14, "성장 전략", str(profile.get("growth_strategy", "")).strip() or "확인 필요", height=42)
+    competencies = [str(value).strip() for value in profile.get("core_competencies", []) if str(value).strip()]
+    for index in range(4):
+        labeled_row(15 + index, "핵심 역량" if index == 0 else "", competencies[index] if index < len(competencies) else "")
+
+    ws.merge_cells("E20:H20")
+    ws["E20"] = "핵심 연혁"
+    ws["E20"].font = HEADER
+    ws["E20"].fill = PatternFill("solid", fgColor=GREY)
+    ws["E20"].alignment = CENTER
+    for index in range(6):
+        row = 21 + index
+        item = pack.chronology[index] if index < len(pack.chronology) else {}
+        ws.merge_cells(start_row=row, start_column=9, end_row=row, end_column=11)
+        ws.merge_cells(start_row=row, start_column=12, end_row=row, end_column=34)
+        ws.cell(row, 9, item.get("date", ""))
+        ws.cell(row, 12, item.get("event", ""))
+        for col in (5, 9, 12):
+            cell = ws.cell(row, col)
+            cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            cell.alignment = LEFT_WRAP if col == 12 else CENTER
+            cell.font = BODY if col != 12 else Font(name="맑은 고딕", size=9)
+        if index == 0:
+            ws.cell(row, 5, "연혁")
+            ws.cell(row, 5).fill = PatternFill("solid", fgColor=GREY)
+            ws.cell(row, 5).font = HEADER
         ws.row_dimensions[row].height = 22
 
-    _style_section(ws, 18, 4, 38, "나. 재무 현황")
+    _style_section(ws, 28, 4, 38, "나. 재무 현황")
     periods = _periods(pack)[-5:]
-    ws.merge_cells("E20:H20")
-    ws["E20"] = "지표"
-    ws["E20"].font = HEADER
-    ws["E20"].fill = PatternFill("solid", fgColor=LIGHT_BLUE)
-    ws["E20"].alignment = CENTER
+    ws.merge_cells("E30:H30")
+    ws["E30"] = "지표"
+    ws["E30"].font = HEADER
+    ws["E30"].fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+    ws["E30"].alignment = CENTER
     for period_index, period in enumerate(periods):
         start_col = 9 + period_index * 5
         end_col = start_col + 4
-        ws.merge_cells(start_row=20, start_column=start_col, end_row=20, end_column=end_col)
-        cell = ws.cell(20, start_col, period)
+        ws.merge_cells(start_row=30, start_column=start_col, end_row=30, end_column=end_col)
+        cell = ws.cell(30, start_col, period)
         cell.font = HEADER
         cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
         cell.alignment = CENTER
-    summary_rows = [(21, "매출액", 6), (22, "영업이익", 7), (23, "당기순이익", 8), (24, "자산총계", 10), (25, "부채총계", 12), (26, "자본총계", 14), (27, "부채비율", 26)]
-    for row, label, financial_row in summary_rows:
+    summary_rows = [
+        (31, "매출액", 6, False), (32, "매출액증감률", 20, True),
+        (33, "영업이익", 7, False), (34, "영업이익증감률", 21, True),
+        (35, "당기순이익", 8, False), (36, "영업이익률", 24, True), (37, "순이익률", 25, True),
+        (38, "자산총계", 10, False), (39, "부채총계", 12, False), (40, "자본총계", 14, False),
+        (41, "부채비율", 26, True), (42, "유동비율", 27, True), (43, "순차입금", 28, False), (44, "이자보상배율", 29, False),
+    ]
+    for row, label, financial_row, is_percent in summary_rows:
         ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=8)
         ws.cell(row, 5, label)
         for period_index, _ in enumerate(periods):
@@ -279,41 +383,38 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
             source_col = get_column_letter(3 + len(_periods(pack)) - len(periods) + period_index)
             ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
             ws.cell(row, start_col, f"='재무'!{source_col}{financial_row}")
-            ws.cell(row, start_col).number_format = PERCENT_FORMAT if label == "부채비율" else NUMBER_FORMAT
+            ws.cell(row, start_col).number_format = PERCENT_FORMAT if is_percent else NUMBER_FORMAT
         for col in [5] + [9 + period_index * 5 for period_index in range(len(periods))]:
             ws.cell(row, col).border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
             ws.cell(row, col).alignment = CENTER
-    ws.merge_cells("E29:AG29")
-    ws["E29"] = f"재무제표 기준: {_basis_label(pack.reporting_policy['primary_fs_basis'])} · 표시값은 재무 data 원천값을 재무 시트 수식으로 연결"
-    ws["E29"].alignment = LEFT_WRAP
+            if row in {32, 34, 36, 37, 41, 42}:
+                ws.cell(row, col).fill = PatternFill("solid", fgColor="F8FBFD")
+    growth_note, profitability_note, stability_note = _financial_commentary(pack)
+    labeled_row(45, "성장성 해석", growth_note)
+    labeled_row(46, "수익성 해석", profitability_note)
+    labeled_row(47, "안정성 해석", stability_note)
 
-    _style_section(ws, 31, 4, 38, "다. 입력 이슈 웹 조사 및 주가")
-    ws.merge_cells("E32:S32")
+    _style_section(ws, 49, 4, 38, "다. 주요 사항")
+    ws.merge_cells("E50:S50")
     issue_query = str(pack.reporting_policy.get("issue_query", "")).strip()
-    ws["E32"] = f"입력 이슈: {issue_query}" if issue_query else "입력 이슈: N/A"
-    ws["E32"].font = Font(name="맑은 고딕", size=9, italic=True, color="555555")
-    ws["E32"].alignment = LEFT_WRAP
-    if pack.major_matters:
-        for index, matter in enumerate(pack.major_matters[:5]):
-            row = 33 + index * 3
-            ws.merge_cells(start_row=row, start_column=5, end_row=row + 1, end_column=19)
-            cell = ws.cell(row, 5)
-            cell.value = f"[{matter.category}]\n사실: {matter.fact}\n시사점: {matter.interpretation}"
-            cell.alignment = LEFT_WRAP
-            cell.font = Font(name="맑은 고딕", size=8.5)
-            cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
-            ws.row_dimensions[row].height = 33
-            ws.row_dimensions[row + 1].height = 33
+    ws["E50"] = f"검토 요청: {issue_query}" if issue_query else "검토 요청: N/A"
+    ws["E50"].font = Font(name="맑은 고딕", size=9, italic=True, color="555555")
+    ws["E50"].alignment = LEFT_WRAP
+    issue_matters = [matter for matter in pack.major_matters if not matter.category.startswith("주가 변동")][:3]
+    if issue_matters:
+        for index, matter in enumerate(issue_matters):
+            row = 52 + index * 2
+            category = matter.category.removeprefix("Gemini 분석·").removeprefix("웹 이슈 조사·")
+            labeled_row(row, f"◯ {category}", _short_text(matter.fact, 150), height=34)
+            labeled_row(row + 1, "시사점", _short_text(matter.interpretation, 150), height=34)
     else:
-        ws.merge_cells("E33:S34")
-        ws["E33"] = "입력한 이슈가 없습니다. 웹 이슈 질의를 입력하면 조사 결과와 근거 URL을 표시합니다."
-        ws["E33"].alignment = LEFT_WRAP
+        labeled_row(52, "◯ 주요 사항", "입력한 이슈가 없습니다. 웹 이슈 질의를 입력하면 근거 기반 요약을 표시합니다.")
 
     if pack.entity.get("listing_status") == "listed" and pack.price_history:
-        ws.merge_cells("T32:AH32")
-        ws["T32"] = "최근 1년 주가 추이 · 상세 표와 급변 구간 설명은 ‘주가’ 시트 참조"
-        ws["T32"].font = Font(name="맑은 고딕", size=9, bold=True, color="555555")
-        ws["T32"].alignment = CENTER
+        ws.merge_cells("T50:AH50")
+        ws["T50"] = "최근 1년 주가 추이"
+        ws["T50"].font = Font(name="맑은 고딕", size=9, bold=True, color="555555")
+        ws["T50"].alignment = CENTER
         chart = LineChart()
         chart.title = "최근 1년 주가 추이"
         chart.y_axis.title = "종가"
@@ -327,19 +428,19 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         chart.set_categories(categories)
         chart.legend = None
         chart.dataLabels = DataLabelList()
-        ws.add_chart(chart, "T33")
+        ws.add_chart(chart, "T51")
     elif pack.entity.get("listing_status") != "listed":
-        ws["T33"] = "주가 추이: 비상장으로 시장가격 정보 없음"
+        ws.merge_cells("T50:AH50")
+        ws["T50"] = "주가 추이: 비상장으로 시장가격 정보 없음"
+        ws["T50"].alignment = CENTER
 
-    _style_section(ws, 49, 4, 38, "라. 자회사 등 현황")
-    ws.merge_cells("E51:AH52")
-    ws["E51"] = f"최신 사업보고서 주석에서 추출한 자회사 {len(pack.subsidiaries)}개를 ‘자회사 등’ 시트에 표시했습니다." if pack.subsidiaries else "자회사 정보는 최신 사업보고서 주석에서 추출을 시도했으나 표를 확인하지 못했습니다. 원문 주석 확인 필요"
-    ws["E51"].alignment = LEFT_WRAP
+    _style_section(ws, 60, 4, 38, "라. 자회사 등 현황")
+    labeled_row(62, "자회사", f"최신 사업보고서 주석에서 추출한 자회사 {len(pack.subsidiaries)}개를 ‘자회사 등’ 시트에 표시했습니다." if pack.subsidiaries else "자회사 정보는 최신 사업보고서 주석 확인 필요")
 
     for column in range(1, 39):
         ws.column_dimensions[get_column_letter(column)].width = 3.2
     ws.column_dimensions["C"].width = 12
-    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=53))
+    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=63))
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
@@ -372,7 +473,7 @@ def _write_price_sheet(ws, pack: FactPack) -> None:
     ws.title = "주가"
     ws["A1"] = "최근 1년 주가 분석"
     ws["A1"].font = TITLE
-    ws["A2"] = "원천: 주가 data 시트의 Yahoo Finance 일별 종가. 표시 표는 원천 시트를 참조합니다."
+    ws["A2"] = "원천: 주가 data 시트의 Yahoo Finance 일별 종가"
     ws["A2"].font = Font(name="맑은 고딕", size=9, color="555555")
     ws.merge_cells("A2:F2")
     if not pack.price_history:
@@ -407,22 +508,22 @@ def _write_price_sheet(ws, pack: FactPack) -> None:
     ws["B8"].number_format = PERCENT_FORMAT
 
     event_matters = [item for item in pack.major_matters if item.category == "주가 변동·이슈 대조"]
-    ws["H2"] = "급변 구간 및 이슈 대조"
+    ws["H2"] = "주요 변동 이벤트"
     ws["H2"].font = HEADER
-    for col, label in enumerate(["거래일", "변동 및 사실", "해석", "출처"], start=8):
+    for col, label in enumerate(["거래일", "관련 이벤트", "출처"], start=8):
         cell = ws.cell(3, col, label)
         cell.font = HEADER
         cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
         cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
         cell.alignment = CENTER
-    for row, matter in enumerate(event_matters, start=4):
-        values = [matter.disclosure_date, matter.fact, matter.interpretation, matter.url]
+    for row, matter in enumerate(event_matters[:2], start=4):
+        values = [matter.disclosure_date, _short_text(matter.fact, 110), matter.url]
         for col, value in enumerate(values, start=8):
             ws.cell(row, col, value)
-            ws.cell(row, col).alignment = LEFT_WRAP if col in {9, 10, 11} else CENTER
+            ws.cell(row, col).alignment = LEFT_WRAP if col in {9, 10} else CENTER
             ws.cell(row, col).border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
     if not event_matters:
-        ws.merge_cells("H4:K4")
+        ws.merge_cells("H4:J4")
         ws["H4"] = "수집된 이슈와 날짜가 가까운 급변 구간을 확인하지 못했습니다."
 
     headers = ["거래일", "종가", "거래량", "1일 변동률", "5일 변동률", "20일 변동률", "이슈 대조"]
@@ -463,7 +564,7 @@ def _write_price_sheet(ws, pack: FactPack) -> None:
     ws.add_chart(chart, "H10")
     ws.freeze_panes = "A14"
     ws.auto_filter.ref = f"A13:G{13 + len(points)}"
-    for col, width in enumerate([14, 14, 18, 14, 14, 14, 58, 14, 42, 48, 55], start=1):
+    for col, width in enumerate([14, 14, 18, 14, 14, 14, 58, 14, 55, 55], start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
