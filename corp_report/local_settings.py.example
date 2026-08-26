@@ -1,0 +1,4 @@
+"""개인 PC 전용 OpenDART 설정입니다. 이 파일을 복사해 local_settings.py로 사용하세요."""
+
+# Git에 포함되지 않는 corp_report/local_settings.py에 실제 키를 넣습니다.
+DART_API_KEY = ""

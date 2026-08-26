@@ -16,6 +16,8 @@ python app.py
 DART_API_KEY=발급받은_OpenDART_API_키
 ```
 
+프로그램 내부 설정 파일을 쓰려면 `corp_report/local_settings.py.example`을 같은 폴더의 `local_settings.py`로 복사한 뒤 `DART_API_KEY` 값에 키를 입력합니다. 이 파일도 Git에서 제외됩니다. 단, 실행 파일을 다른 사람에게 배포하면 키가 노출될 수 있으므로 개인용으로만 사용하세요.
+
 브라우저에서 `http://localhost:8080`을 열어 회사명 또는 종목코드, 별도/연결 기준, 재무연도, 확인할 이슈를 입력합니다. 기본 기준은 별도(OFS)입니다.
 
 ## 기존 수집기 연결

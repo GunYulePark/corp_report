@@ -18,6 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 load_dotenv(PROJECT_ROOT / ".env")
 
+try:
+    from .local_settings import DART_API_KEY as EMBEDDED_DART_API_KEY
+except ImportError:
+    EMBEDDED_DART_API_KEY = ""
+
+DEFAULT_DART_API_KEY = os.getenv("DART_API_KEY", EMBEDDED_DART_API_KEY)
+
 
 def _parse_years(text: str) -> list[int]:
     values = []
@@ -51,7 +58,7 @@ def create_app() -> None:
                 issue = ui.input("확인할 이슈", placeholder="예: 투자, 계약, 인허가, 소송, M&A").classes("w-[32rem]")
                 latest_interim = ui.checkbox("최신 분기·반기 포함", value=True)
                 price_chart = ui.checkbox("상장사 주가 추이 포함", value=True)
-            api_key = ui.input("OpenDART API 키", password=True, password_toggle_button=True, value=os.getenv("DART_API_KEY", "")).classes("w-full")
+            api_key = ui.input("OpenDART API 키", password=True, password_toggle_button=True, value=DEFAULT_DART_API_KEY).classes("w-full")
             ui.label("API 키는 브라우저에 저장하지 않으며, 이번 생성 작업에만 사용합니다.").classes("text-xs text-slate-500")
 
         status = ui.label("조건을 입력한 뒤 보고서를 생성하세요.").classes("text-slate-600")
