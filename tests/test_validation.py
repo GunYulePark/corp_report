@@ -7,6 +7,7 @@ import openpyxl
 
 from corp_report.models import FactPack, FinancialFact, MatterFact, PricePoint, SourceDocument
 from corp_report.collector import _optional_int
+from corp_report.gemini_research import _to_matters
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
 from corp_report.web_research import price_event_matters
@@ -79,3 +80,13 @@ class ValidationTests(unittest.TestCase):
         matter = MatterFact("웹 이슈 조사", "계약", "해석", "verified", "event-1", "공식 보도자료", "2026-08-24", "https://example.com/event")
         results = price_event_matters(points, [matter])
         self.assertEqual(len([item for item in results if item.category == "주가 변동·이슈 대조"]), 1)
+
+    def test_gemini_result_requires_known_source_id(self) -> None:
+        source = MatterFact("웹 이슈 조사", "공식 사실", "해석", "verified", "official-1", "공식 발표", "2026-01-01", "https://example.com")
+        payload = {"items": [
+            {"category": "계약", "fact": "근거 있는 사실", "interpretation": "근거 있는 해석", "source_ids": ["official-1"], "verification_status": "verified"},
+            {"category": "계약", "fact": "근거 없는 사실", "interpretation": "근거 없는 해석", "source_ids": ["invented"], "verification_status": "verified"},
+        ]}
+        results = _to_matters(payload, [source])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].source_document_id, "official-1")

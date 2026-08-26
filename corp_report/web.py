@@ -19,8 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 load_dotenv(PROJECT_ROOT / ".env")
 
-def _embedded_api_key() -> str:
-    """Load the local-only key on each report run so a browser refresh is unnecessary."""
+def _embedded_secret(name: str) -> str:
+    """Load a local-only secret on each report run without exposing it to the browser."""
     settings_path = PROJECT_ROOT / "corp_report" / "local_settings.py"
     if not settings_path.exists():
         return ""
@@ -30,9 +30,14 @@ def _embedded_api_key() -> str:
             return ""
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return str(getattr(module, "DART_API_KEY", "")).strip()
+        return str(getattr(module, name, "")).strip()
     except Exception:
         return ""
+
+
+def _embedded_api_key() -> str:
+    """Backward-compatible OpenDART key accessor used by local tooling and tests."""
+    return _embedded_secret("DART_API_KEY")
 
 
 def _parse_years(text: str) -> list[int]:
@@ -67,7 +72,7 @@ def create_app() -> None:
                 issue = ui.input("이슈 조사 요청", placeholder="예: 최근 3.2조 기술수출과 국내 비만치료제 기술수출 금액·파이프라인 비교").classes("w-[32rem]")
                 latest_interim = ui.checkbox("최신 분기·반기 포함", value=True)
                 price_chart = ui.checkbox("상장사 주가 추이 포함", value=True)
-            ui.label("이슈 조사 방식: 입력 후 생성 시 Google News 검색 결과를 수집합니다. 현재 GPT/OpenAI API 토큰은 사용하지 않으며, 확인되지 않은 기사 검색 결과는 ‘검토 필요’로 표시합니다.").classes("text-xs text-slate-500")
+            ui.label("이슈 조사 방식: 출처를 수집한 뒤 Gemini가 사실·비교·시사점 JSON으로 정리합니다. 키는 서버 로컬 설정에서만 읽으며 확인되지 않은 기사 검색 결과는 ‘검토 필요’로 표시합니다.").classes("text-xs text-slate-500")
             ui.label("OpenDART API 키는 로컬 설정 파일에서만 읽습니다.").classes("text-xs text-slate-500")
 
         status = ui.label("조건을 입력한 뒤 보고서를 생성하세요.").classes("text-slate-600")
@@ -92,10 +97,11 @@ def create_app() -> None:
                 )
                 if not report_request.identifier:
                     raise ValueError("회사명 또는 종목코드를 입력하세요.")
-                status.text = "1/2 공시·재무정보와 요청 이슈를 수집하고 있습니다…"
+                status.text = "1/2 공시·재무정보와 요청 이슈 출처를 수집하고 Gemini 분석을 실행하고 있습니다…"
                 await asyncio.sleep(0)
                 resolved_api_key = os.getenv("DART_API_KEY", "").strip() or _embedded_api_key()
-                collector = DartFactPackCollector(resolved_api_key)
+                resolved_gemini_key = os.getenv("GEMINI_API_KEY", "").strip() or _embedded_secret("GEMINI_API_KEY")
+                collector = DartFactPackCollector(resolved_api_key, gemini_api_key=resolved_gemini_key)
                 pack = await run.io_bound(collector.collect, report_request)
                 pack.validation_results = validate_fact_pack(pack)
                 status.text = "2/2 Excel 보고서를 생성하고 있습니다. 시트·수식·주가 그래프를 작성 중입니다…"

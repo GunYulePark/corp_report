@@ -13,6 +13,7 @@ from uuid import uuid4
 import requests
 
 from .models import FactPack, FinancialFact, PricePoint, ReportRequest, SourceDocument, now_iso
+from .gemini_research import analyze_issue
 from .web_research import price_event_matters, research_issue
 
 
@@ -114,11 +115,12 @@ def _latest_report_type() -> tuple[int, str]:
 
 
 class DartFactPackCollector:
-    def __init__(self, api_key: str, pipeline_path: str | None = None) -> None:
+    def __init__(self, api_key: str, pipeline_path: str | None = None, gemini_api_key: str = "") -> None:
         if not api_key.strip():
             raise ValueError("OpenDART API 키를 corp_report/local_settings.py 또는 DART_API_KEY 환경변수에 설정하세요.")
         self.core = load_pipeline(pipeline_path)
         self.api_key = self.core.ensure_api_key(api_key)
+        self.gemini_api_key = gemini_api_key
 
     def resolve_company(self, identifier: str) -> dict[str, str]:
         companies = self.core.fetch_corp_codes(self.api_key)
@@ -268,7 +270,10 @@ class DartFactPackCollector:
             "listing_status": "listed" if company.get("stock_code") else "unlisted",
         }
         price_history = self._price_history(str(company.get("stock_code", ""))) if request.include_price_chart else []
-        research_matters = research_issue(str(company.get("corp_name", request.identifier)), request.issue_query)
+        company_name = str(company.get("corp_name", request.identifier))
+        source_matters = research_issue(company_name, request.issue_query)
+        gemini_matters = analyze_issue(company_name, request.issue_query, source_matters, self.gemini_api_key)
+        research_matters = gemini_matters or source_matters
         # User-entered issue research is the primary source for this section;
         # generic recent disclosures are not substituted when no query is given.
         major_matters = research_matters + price_event_matters(price_history, research_matters)
@@ -281,6 +286,7 @@ class DartFactPackCollector:
                 "display_unit": "억원",
                 "currency": "KRW",
                 "issue_query": request.issue_query,
+                "issue_analysis_provider": "Gemini" if gemini_matters else "source_only",
             },
             documents=list(document_index.values()),
             financial_facts=facts,
