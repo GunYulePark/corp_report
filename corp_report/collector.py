@@ -87,7 +87,7 @@ def _latest_report_type() -> tuple[int, str]:
 class DartFactPackCollector:
     def __init__(self, api_key: str, pipeline_path: str | None = None) -> None:
         if not api_key.strip():
-            raise ValueError("OpenDART API 키를 입력하거나 DART_API_KEY 환경변수를 설정하세요.")
+            raise ValueError("OpenDART API 키를 corp_report/local_settings.py 또는 DART_API_KEY 환경변수에 설정하세요.")
         self.core = load_pipeline(pipeline_path)
         self.api_key = self.core.ensure_api_key(api_key)
 
@@ -283,4 +283,3 @@ class DartFactPackCollector:
             major_matters=self._issue_matters(company["corp_code"], request.issue_query, years),
             price_history=self._price_history(str(company.get("stock_code", ""))) if request.include_price_chart else [],
         )
-
