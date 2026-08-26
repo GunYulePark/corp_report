@@ -67,6 +67,7 @@ def create_app() -> None:
                 issue = ui.input("이슈 조사 요청", placeholder="예: 최근 3.2조 기술수출과 국내 비만치료제 기술수출 금액·파이프라인 비교").classes("w-[32rem]")
                 latest_interim = ui.checkbox("최신 분기·반기 포함", value=True)
                 price_chart = ui.checkbox("상장사 주가 추이 포함", value=True)
+            ui.label("이슈 조사 방식: 입력 후 생성 시 Google News 검색과 출처 웹페이지를 조회합니다. 현재 GPT/OpenAI API 토큰은 사용하지 않으며, 확인되지 않은 기사 검색 결과는 ‘검토 필요’로 표시합니다.").classes("text-xs text-slate-500")
             ui.label("OpenDART API 키는 로컬 설정 파일에서만 읽습니다.").classes("text-xs text-slate-500")
 
         status = ui.label("조건을 입력한 뒤 보고서를 생성하세요.").classes("text-slate-600")

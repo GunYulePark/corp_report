@@ -276,7 +276,12 @@ class DartFactPackCollector:
             pack_id=str(uuid4()),
             generated_at=now_iso(),
             entity=entity,
-            reporting_policy={"primary_fs_basis": request.fs_div, "display_unit": "억원", "currency": "KRW"},
+            reporting_policy={
+                "primary_fs_basis": request.fs_div,
+                "display_unit": "억원",
+                "currency": "KRW",
+                "issue_query": request.issue_query,
+            },
             documents=list(document_index.values()),
             financial_facts=facts,
             corporate_profile=profile,

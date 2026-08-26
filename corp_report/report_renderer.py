@@ -259,23 +259,33 @@ def _write_summary_sheet(ws, pack: FactPack) -> None:
     ws["E25"] = f"재무제표 기준: {_basis_label(pack.reporting_policy['primary_fs_basis'])} · 표시값은 재무 data 원천값을 재무 시트 수식으로 연결"
     ws["E25"].alignment = LEFT_WRAP
 
-    _style_section(ws, 27, 4, 38, "다. 주요 사항")
+    _style_section(ws, 27, 4, 38, "다. 입력 이슈 웹 조사 및 주가")
+    ws.merge_cells("E28:S28")
+    issue_query = str(pack.reporting_policy.get("issue_query", "")).strip()
+    ws["E28"] = f"입력 이슈: {issue_query}" if issue_query else "입력 이슈: N/A"
+    ws["E28"].font = Font(name="맑은 고딕", size=9, italic=True, color="555555")
+    ws["E28"].alignment = LEFT_WRAP
     if pack.major_matters:
-        for index, matter in enumerate(pack.major_matters[:5], start=29):
-            ws.merge_cells(start_row=index, start_column=5, end_row=index, end_column=34)
-            ws.cell(index, 5, f"• [{matter.category}] {matter.fact} — {matter.interpretation}")
-            ws.cell(index, 5).alignment = LEFT_WRAP
+        for index, matter in enumerate(pack.major_matters[:5]):
+            row = 29 + index * 3
+            ws.merge_cells(start_row=row, start_column=5, end_row=row + 1, end_column=19)
+            cell = ws.cell(row, 5)
+            cell.value = f"[{matter.category}]\n사실: {matter.fact}\n시사점: {matter.interpretation}"
+            cell.alignment = LEFT_WRAP
+            cell.font = Font(name="맑은 고딕", size=8.5)
+            cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            ws.row_dimensions[row].height = 33
+            ws.row_dimensions[row + 1].height = 33
     else:
-        ws.merge_cells("E29:AH30")
+        ws.merge_cells("E29:S30")
         ws["E29"] = "입력한 이슈가 없습니다. 웹 이슈 질의를 입력하면 조사 결과와 근거 URL을 표시합니다."
         ws["E29"].alignment = LEFT_WRAP
 
-    _style_section(ws, 36, 4, 38, "라. 자회사 등 현황")
-    ws.merge_cells("E38:AH39")
-    ws["E38"] = "자회사 정보는 사업보고서의 타법인 출자·연결대상 종속기업 주석 추출 단계에서 보강됩니다. 현재: 확인 필요"
-    ws["E38"].alignment = LEFT_WRAP
-
     if pack.entity.get("listing_status") == "listed" and pack.price_history:
+        ws.merge_cells("T28:AH28")
+        ws["T28"] = "최근 1년 주가 추이 · 급변 구간은 왼쪽 이슈 대조 행 참조"
+        ws["T28"].font = Font(name="맑은 고딕", size=9, bold=True, color="555555")
+        ws["T28"].alignment = CENTER
         for row, point in enumerate(pack.price_history, start=2):
             ws.cell(row, 40, point.trading_date)
             ws.cell(row, 41, point.close)
@@ -291,16 +301,21 @@ def _write_summary_sheet(ws, pack: FactPack) -> None:
         chart.set_categories(categories)
         chart.legend = None
         chart.dataLabels = DataLabelList()
-        ws.add_chart(chart, "T41")
+        ws.add_chart(chart, "T29")
         ws.column_dimensions["AN"].hidden = True
         ws.column_dimensions["AO"].hidden = True
     elif pack.entity.get("listing_status") != "listed":
-        ws["T41"] = "주가 추이: 비상장으로 시장가격 정보 없음"
+        ws["T29"] = "주가 추이: 비상장으로 시장가격 정보 없음"
+
+    _style_section(ws, 45, 4, 38, "라. 자회사 등 현황")
+    ws.merge_cells("E47:AH48")
+    ws["E47"] = "자회사 정보는 사업보고서의 타법인 출자·연결대상 종속기업 주석 추출 단계에서 보강됩니다. 현재: 확인 필요"
+    ws["E47"].alignment = LEFT_WRAP
 
     for column in range(1, 39):
         ws.column_dimensions[get_column_letter(column)].width = 3.2
     ws.column_dimensions["C"].width = 12
-    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=47))
+    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=49))
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
