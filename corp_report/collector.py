@@ -17,7 +17,7 @@ import requests
 
 from .models import FactPack, FinancialFact, MatterFact, PricePoint, ReportRequest, SourceDocument, now_iso
 from .gemini_research import analyze_corporate_profile, analyze_issue
-from .web_research import price_event_matters, research_issue
+from .web_research import company_context_matters, company_context_profile, company_context_sources, price_event_matters, research_issue
 
 
 DEFAULT_PIPELINE_PATH = Path(r"C:\Users\CKD\dart-fss\dart_app_4.py")
@@ -397,12 +397,48 @@ class DartFactPackCollector:
         name = re.sub(r"\(\*?\d+\)", "", str(value or ""))
         return _clean(name).replace("㈜", "").replace("주식회사", "")
 
+    def _audit_related_subsidiaries(self, tables: list[pd.DataFrame], filing: dict[str, Any], node: dict[str, str], receipt: str) -> list[dict[str, str]]:
+        """Read a subsidiary name from an audit report's related-party note.
+
+        Audit-only filers often disclose the entity in the related-party note
+        (for example, note 33) rather than in a business-report ownership table.
+        The note does not necessarily disclose stake, activity or location, so
+        those fields remain explicit "확인 필요" rather than being inferred.
+        """
+        results: dict[str, dict[str, str]] = {}
+        for table_index, table in enumerate(tables, start=1):
+            if table.empty:
+                continue
+            for values in table.fillna("").itertuples(index=False, name=None):
+                cells = [str(value).strip() for value in values]
+                relation_index = next((index for index, value in enumerate(cells) if _clean(value) in {"종속기업", "자회사"}), None)
+                if relation_index is None:
+                    continue
+                name = next((value for value in cells[relation_index + 1:] if value and _clean(value) not in {"합계", "nan", "none"}), "")
+                key = self._subsidiary_name_key(name)
+                if not name or len(name) < 2 or key in results:
+                    continue
+                results[key] = {
+                    "사업군": "기타",
+                    "자회사명": name,
+                    "지분율": "확인 필요",
+                    "사업영역": "감사보고서 특수관계자 주석상 종속기업",
+                    "소재지": "확인 필요",
+                    "주요 생산시설 또는 핵심 역량": "확인 필요",
+                    "비고": "종속기업 · 지분율 및 사업영역은 원문 별도 확인 필요",
+                    "출처 문서": str(filing.get("report_nm", "감사보고서")),
+                    "출처일": str(filing.get("rcept_dt", "")),
+                    "출처 URL": self.core.disclosure_url(receipt),
+                    "출처 위치": f"{node.get('text', '주석')} · 특수관계자 표 {table_index}",
+                }
+        return list(results.values())[:50]
+
     def _subsidiaries(self, corp_code: str, years: list[int]) -> list[dict[str, str]]:
-        """Extract subsidiary rows from the latest annual-report note table when available.
+        """Extract subsidiary rows from the latest business/audit-report note table when available.
 
         This is intentionally independent of the selected OFS/CFS financial basis:
         subsidiary coverage is a group disclosure, so it is sourced from the
-        annual report rather than inferred from an individual financial statement.
+        business or audit report rather than inferred from an individual financial statement.
         """
         if not years:
             return []
@@ -427,6 +463,10 @@ class DartFactPackCollector:
                     node for node in nodes
                     if any(hint in _clean(node.get("text", "")) for hint in ("종속기업", "연결대상", "타법인출자"))
                 ]
+                # Audit reports typically expose all notes under a single
+                # "주석" node, including the related-party/subsidiary note.
+                if not note_nodes:
+                    note_nodes = [node for node in nodes if "주석" in _clean(node.get("text", ""))]
                 for node in note_nodes[:8]:
                     try:
                         tables = pd.read_html(StringIO(self.core.fetch_viewer_html(node)))
@@ -508,6 +548,9 @@ class DartFactPackCollector:
                             if key in financials:
                                 unique[key].update(financials[key])
                         return list(unique.values())[:50]
+                    audit_rows = self._audit_related_subsidiaries(tables, filing, node, receipt)
+                    if audit_rows:
+                        return audit_rows
         return []
 
     @staticmethod
@@ -661,10 +704,13 @@ class DartFactPackCollector:
         profile = self._company_profile(company["corp_code"])
         governance = self._governance_snapshot(company["corp_code"], max(years))
         profile.update({key: value for key, value in governance.items() if value not in (None, "")})
-        corporate_sources = self._corporate_report_sources(company["corp_code"], years)
+        corporate_sources = [*self._corporate_report_sources(company["corp_code"], years), *company_context_sources(str(company.get("corp_name", request.identifier)))]
         corporate_analysis = analyze_corporate_profile(str(company.get("corp_name", request.identifier)), corporate_sources, self.gemini_api_key)
         if corporate_analysis:
             profile.update({key: value for key, value in corporate_analysis.items() if key != "chronology" and value not in (None, "", [])})
+        for key, value in company_context_profile(str(company.get("corp_name", request.identifier))).items():
+            if not profile.get(key):
+                profile[key] = value
         subsidiaries = self._subsidiaries(company["corp_code"], years)
         entity = {
             "input_identifier": request.identifier,
@@ -678,7 +724,7 @@ class DartFactPackCollector:
             entity["market_cap_krw"] = round(price_history[-1].close * governance["issued_shares"])
             entity["market_price_date"] = price_history[-1].trading_date
         company_name = str(company.get("corp_name", request.identifier))
-        source_matters = research_issue(company_name, request.issue_query)
+        source_matters = [*company_context_matters(company_name), *research_issue(company_name, request.issue_query)]
         gemini_matters = analyze_issue(company_name, request.issue_query, source_matters, self.gemini_api_key)
         research_matters = gemini_matters or source_matters
         # User-entered issue research is the primary source for this section;

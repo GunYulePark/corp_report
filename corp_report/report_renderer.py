@@ -434,13 +434,40 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         ws["T50"] = "주가 추이: 비상장으로 시장가격 정보 없음"
         ws["T50"].alignment = CENTER
 
-    _style_section(ws, 60, 4, 38, "라. 자회사 등 현황")
-    labeled_row(62, "자회사", f"최신 사업보고서 주석에서 추출한 자회사 {len(pack.subsidiaries)}개를 ‘자회사 등’ 시트에 표시했습니다." if pack.subsidiaries else "자회사 정보는 최신 사업보고서 주석 확인 필요")
+    _style_section(ws, 68, 4, 38, "라. 자회사 등 현황")
+    subsidiary_headers = [(5, 8, "사업군"), (9, 14, "자회사명"), (15, 18, "지분율"), (19, 34, "사업영역·비고")]
+    for start_col, end_col, label in subsidiary_headers:
+        ws.merge_cells(start_row=70, start_column=start_col, end_row=70, end_column=end_col)
+        cell = ws.cell(70, start_col, label)
+        cell.font = HEADER
+        cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+        cell.alignment = CENTER
+        cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+    if pack.subsidiaries:
+        for offset, subsidiary in enumerate(pack.subsidiaries[:3], start=0):
+            row = 71 + offset
+            values = [
+                subsidiary.get("사업군", "확인 필요"),
+                subsidiary.get("자회사명", "확인 필요"),
+                subsidiary.get("지분율", "확인 필요"),
+                " · ".join(value for value in [subsidiary.get("사업영역", ""), subsidiary.get("비고", "")] if value) or "확인 필요",
+            ]
+            for (start_col, end_col, _), value in zip(subsidiary_headers, values):
+                ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
+                cell = ws.cell(row, start_col, value)
+                cell.font = Font(name="맑은 고딕", size=9)
+                cell.alignment = LEFT_WRAP
+                cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            ws.row_dimensions[row].height = 24
+    else:
+        ws.merge_cells("E71:AH71")
+        ws["E71"] = "자회사 정보는 최신 사업보고서 또는 감사보고서 주석에서 확인 필요"
+        ws["E71"].alignment = LEFT_WRAP
 
     for column in range(1, 39):
         ws.column_dimensions[get_column_letter(column)].width = 3.2
     ws.column_dimensions["C"].width = 12
-    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=63))
+    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=74))
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1

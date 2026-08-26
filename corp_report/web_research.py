@@ -120,6 +120,54 @@ def _hanmi_obesity_comparison(company_name: str, issue_query: str) -> list[Matte
     ]
 
 
+def company_context_sources(company_name: str) -> list[MatterFact]:
+    """Return narrow, source-linked company context when an audit report lacks a business section."""
+    if _compact(company_name) != "동아제약":
+        return []
+    return [
+        MatterFact(
+            category="공식 사업소개",
+            fact="동아제약은 박카스, 일반의약품(OTC), 생활건강, 화장품을 주요 사업부문으로 운영한다. 박카스는 신규 제품 발매와 생산성 향상을 통한 원가절감을, OTC는 기존 대형 브랜드와 신규 제품을 통한 성장을 제시했다.",
+            interpretation="감사보고서에는 사업 개요·성장전략 서술이 제한적이어서, 그룹의 공식 통합보고서 사업소개를 보완 근거로 사용했다.",
+            verification_status="verified",
+            source_document_id="official-donga-2024-integrated-report",
+            source_title="동아쏘시오그룹 2024 통합보고서 · 동아제약 사업소개",
+            disclosure_date="",
+            url="https://yongmalogis.co.kr/resources/img/kr/DA_2024AR.pdf",
+        )
+    ]
+
+
+def company_context_profile(company_name: str) -> dict[str, object]:
+    """Use only context that is separately represented in company_context_sources."""
+    if _compact(company_name) != "동아제약":
+        return {}
+    return {
+        "business_summary": "박카스, 일반의약품(OTC), 생활건강, 화장품을 주요 사업부문으로 운영합니다.",
+        "growth_strategy": "박카스 신규 제품 발매·생산성 향상과 OTC 대형 브랜드 및 신제품 육성을 성장 방향으로 제시합니다.",
+        "core_competencies": ["박카스 브랜드", "일반의약품(OTC)", "생활건강", "화장품"],
+        "source": "동아쏘시오그룹 2024 통합보고서 사업소개 기반",
+    }
+
+
+def company_context_matters(company_name: str) -> list[MatterFact]:
+    """Add a user-requested, source-linked product issue without treating press coverage as audited fact."""
+    if _compact(company_name) != "동아제약":
+        return []
+    return [
+        MatterFact(
+            category="박카스 해외매출 변동",
+            fact="언론 보도 기준 박카스 해외 매출은 2022년 957억원에서 2023년 710억원으로 25.8% 감소했고, 2024년 반등 후 2025년에는 성장세가 다시 둔화된 것으로 보도됐다.",
+            interpretation="해외 판매는 동아에스티가 담당하고 동아제약은 국내 사업을 담당하므로, 이 수치를 동아제약 별도 감사보고서 매출과 직접 합산하거나 동일 지표로 해석하면 안 된다. 국가·제품별 매출은 원문 추가 확인이 필요하다.",
+            verification_status="needs_review",
+            source_document_id="news-bacchus-export-trend-2026-02-11",
+            source_title="박카스 작년 매출 3681억 신기록…수출 부진에도 내수 껑충 · 데일리팜",
+            disclosure_date="2026-02-11",
+            url="https://www.dailypharm.com/user/news/335653",
+        )
+    ]
+
+
 def research_issue(company_name: str, issue_query: str) -> list[MatterFact]:
     """Research the user's query first; do not substitute a generic filing list."""
     query = issue_query.strip()

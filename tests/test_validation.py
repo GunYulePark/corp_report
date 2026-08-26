@@ -11,7 +11,7 @@ from corp_report.collector import DartFactPackCollector, _optional_int, standard
 from corp_report.gemini_research import _to_matters
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
-from corp_report.web_research import price_event_matters
+from corp_report.web_research import company_context_matters, company_context_profile, price_event_matters
 
 
 def _fact(account: str, value: int) -> FinancialFact:
@@ -79,6 +79,14 @@ class ValidationTests(unittest.TestCase):
         matches = DartFactPackCollector._audit_matches(frame, "매출액")
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["당기금액"], 500)
+
+    def test_donga_audit_context_is_source_linked(self) -> None:
+        profile = company_context_profile("동아제약")
+        matters = company_context_matters("동아제약")
+        self.assertIn("박카스", profile["business_summary"])
+        self.assertEqual(len(matters), 1)
+        self.assertEqual(matters[0].verification_status, "needs_review")
+        self.assertTrue(matters[0].url.startswith("https://"))
 
     def test_balance_sheet_tie_out(self) -> None:
         results = validate_fact_pack(self._pack())
