@@ -100,6 +100,7 @@ class FactPack:
     financial_facts: list[FinancialFact] = field(default_factory=list)
     corporate_profile: dict[str, Any] = field(default_factory=dict)
     chronology: list[dict[str, Any]] = field(default_factory=list)
+    corporate_sources: list[MatterFact] = field(default_factory=list)
     subsidiaries: list[dict[str, Any]] = field(default_factory=list)
     major_matters: list[MatterFact] = field(default_factory=list)
     price_history: list[PricePoint] = field(default_factory=list)
@@ -116,6 +117,7 @@ class FactPack:
             "financial_facts": [item.to_dict() for item in self.financial_facts],
             "corporate_profile": self.corporate_profile,
             "chronology": self.chronology,
+            "corporate_sources": [item.to_dict() for item in self.corporate_sources],
             "subsidiaries": self.subsidiaries,
             "major_matters": [item.to_dict() for item in self.major_matters],
             "price_history": [item.to_dict() for item in self.price_history],

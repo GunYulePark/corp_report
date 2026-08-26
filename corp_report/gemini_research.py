@@ -42,6 +42,38 @@ ISSUE_SCHEMA: dict[str, Any] = {
     "required": ["items"],
 }
 
+CORPORATE_CITED_TEXT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "source_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 2},
+    },
+    "required": ["text", "source_ids"],
+}
+
+CORPORATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "business_summary": CORPORATE_CITED_TEXT,
+        "growth_strategy": CORPORATE_CITED_TEXT,
+        "core_competencies": {"type": "array", "items": CORPORATE_CITED_TEXT, "maxItems": 4},
+        "chronology": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "event": {"type": "string"},
+                    "source_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 2},
+                },
+                "required": ["date", "event", "source_ids"],
+            },
+            "maxItems": 6,
+        },
+    },
+    "required": ["business_summary", "growth_strategy", "core_competencies", "chronology"],
+}
+
 
 def _source_payload(matters: list[MatterFact]) -> list[dict[str, str]]:
     return [
@@ -144,3 +176,63 @@ def analyze_issue(company_name: str, issue_query: str, sources: list[MatterFact]
         return []
     payload = _response_json(response)
     return _to_matters(payload, sources) if payload else []
+
+
+def analyze_corporate_profile(company_name: str, sources: list[MatterFact], api_key: str = "") -> dict[str, Any]:
+    """Summarize business content and timeline, constrained to annual-report text."""
+    key = api_key.strip() or os.getenv("GEMINI_API_KEY", "").strip()
+    if not key or not sources:
+        return {}
+    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    source_text = json.dumps(_source_payload(sources), ensure_ascii=False, separators=(",", ":"))
+    prompt = f"""당신은 한국 기업분석 보고서 작성자다. 회사는 {company_name}이다.
+아래 SOURCE는 사업보고서 원문에서 수집한 사업의 내용 및 회사 연혁이다. SOURCE만 근거로 JSON을 작성하라.
+사업개요는 2문장 이내, 성장전략은 2문장 이내, 핵심역량은 최대 4개로 작성한다.
+business_summary·growth_strategy·core_competencies·연혁의 모든 항목에 정확한 source_ids를 하나 이상 넣어야 한다.
+성장전략은 신약개발, 투자, 증설, 시장확대처럼 명시된 전략만 쓴다. 사내 업무도구·일반 규정·무관한 운영 문구는 전략이나 핵심역량으로 쓰지 말고, 근거가 부족하면 text에 '확인 필요'라고 쓴다.
+SOURCE에 없는 수치·사업·연도는 쓰지 말라.
+
+SOURCE:
+{source_text}"""
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": CORPORATE_SCHEMA, "temperature": 0.1},
+    }
+    try:
+        response = requests.post(API_URL.format(model=model), params={"key": key}, headers=USER_AGENT, json=body, timeout=45)
+        response.raise_for_status()
+    except requests.RequestException:
+        return {}
+    payload = _response_json(response)
+    if not payload:
+        return {}
+    known_ids = {source.source_document_id for source in sources}
+    def cited_text(field_name: str) -> str:
+        item = payload.get(field_name, {})
+        if not isinstance(item, dict) or not any(source_id in known_ids for source_id in item.get("source_ids", [])):
+            return ""
+        text = str(item.get("text", "")).strip()
+        return text if text and text != "확인 필요" else ""
+
+    competencies = []
+    for item in payload.get("core_competencies", []):
+        if not isinstance(item, dict) or not any(source_id in known_ids for source_id in item.get("source_ids", [])):
+            continue
+        text = str(item.get("text", "")).strip()
+        if text and text != "확인 필요":
+            competencies.append(text)
+
+    chronology = []
+    for item in payload.get("chronology", []):
+        if not isinstance(item, dict) or not any(source_id in known_ids for source_id in item.get("source_ids", [])):
+            continue
+        date_value, event = str(item.get("date", "")).strip(), str(item.get("event", "")).strip()
+        if date_value and event:
+            chronology.append({"date": date_value, "event": event, "source_ids": [source_id for source_id in item["source_ids"] if source_id in known_ids]})
+    return {
+        "business_summary": cited_text("business_summary"),
+        "growth_strategy": cited_text("growth_strategy"),
+        "core_competencies": competencies[:4],
+        "chronology": chronology[:6],
+        "source": "Gemini 구조화 요약 · 최신 사업보고서 원문 기반",
+    }

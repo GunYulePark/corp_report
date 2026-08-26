@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import html
 import math
 import os
 import re
@@ -14,8 +15,8 @@ from uuid import uuid4
 import pandas as pd
 import requests
 
-from .models import FactPack, FinancialFact, PricePoint, ReportRequest, SourceDocument, now_iso
-from .gemini_research import analyze_issue
+from .models import FactPack, FinancialFact, MatterFact, PricePoint, ReportRequest, SourceDocument, now_iso
+from .gemini_research import analyze_corporate_profile, analyze_issue
 from .web_research import price_event_matters, research_issue
 
 
@@ -65,6 +66,12 @@ def _optional_float(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _dart_number(value: object) -> float | None:
+    """Parse OpenDART numeric strings such as '1,234' or '73.7'."""
+    text = re.sub(r"[^0-9.\-]", "", str(value or ""))
+    return _optional_float(text)
 
 
 def standard_account(account_name: object, account_id: object) -> str:
@@ -181,6 +188,45 @@ class DartFactPackCollector:
             "homepage": result.get("hm_url", ""),
         }
 
+    def _governance_snapshot(self, corp_code: str, year: int) -> dict[str, Any]:
+        """Collect employee, major-holder and issued-share facts from OpenDART."""
+        params = {"corp_code": corp_code, "bsns_year": str(year), "reprt_code": "11011"}
+        result: dict[str, Any] = {"source": "OpenDART 사업보고서 정기공시 API", "fiscal_year": year}
+        try:
+            employees = self.core.call_open_dart_json("empSttus.json", self.api_key, params).get("list", [])
+            regular = sum(_dart_number(row.get("rgllbr_co")) or 0 for row in employees)
+            contract = sum(_dart_number(row.get("cnttk_co")) or 0 for row in employees)
+            if regular or contract:
+                result["employee_count"] = int(regular + contract)
+                result["regular_employee_count"] = int(regular)
+                result["contract_employee_count"] = int(contract)
+        except Exception:
+            pass
+        try:
+            holders = self.core.call_open_dart_json("hyslrSttus.json", self.api_key, params).get("list", [])
+            # hyslrSttus includes a group-total row ("계").  It is useful for
+            # reconciliation but must never be shown as the largest shareholder.
+            individual_holders = [
+                row for row in holders
+                if _clean(row.get("nm")) not in {"계", "합계", "소계", "-", "nan", "none"}
+            ]
+            ranked = sorted(individual_holders, key=lambda row: _dart_number(row.get("trmend_posesn_stock_qota_rt")) or -1, reverse=True)
+            if ranked:
+                holder = ranked[0]
+                result["largest_holder"] = str(holder.get("nm", "확인 필요"))
+                result["largest_holder_relation"] = str(holder.get("relate", ""))
+                result["largest_holder_ratio"] = _dart_number(holder.get("trmend_posesn_stock_qota_rt"))
+        except Exception:
+            pass
+        try:
+            stocks = self.core.call_open_dart_json("stockTotqySttus.json", self.api_key, params).get("list", [])
+            ordinary = next((row for row in stocks if "보통" in str(row.get("se", ""))), stocks[0] if stocks else None)
+            if ordinary:
+                result["issued_shares"] = int(_dart_number(ordinary.get("istc_totqy")) or 0) or None
+        except Exception:
+            pass
+        return result
+
     @staticmethod
     def _flat_columns(frame: pd.DataFrame) -> list[str]:
         columns = []
@@ -209,6 +255,12 @@ class DartFactPackCollector:
         if any(word in text for word in ("미국", "중국", "일본", "유럽", "해외")):
             return "해외사업"
         return "기타"
+
+    @staticmethod
+    def _subsidiary_name_key(value: object) -> str:
+        """Normalize a disclosed entity name enough to join adjacent note tables."""
+        name = re.sub(r"\(\*?\d+\)", "", str(value or ""))
+        return _clean(name).replace("㈜", "").replace("주식회사", "")
 
     def _subsidiaries(self, corp_code: str, years: list[int]) -> list[dict[str, str]]:
         """Extract subsidiary rows from the latest annual-report note table when available.
@@ -245,6 +297,8 @@ class DartFactPackCollector:
                         tables = pd.read_html(StringIO(self.core.fetch_viewer_html(node)))
                     except Exception:
                         continue
+                    ownership_rows: list[dict[str, str]] = []
+                    financials: dict[str, dict[str, str]] = {}
                     for table_index, table in enumerate(tables, start=1):
                         if table.empty or len(table.columns) < 2:
                             continue
@@ -258,6 +312,28 @@ class DartFactPackCollector:
                         business_index = self._column_index(columns, ("주요사업", "주요영업", "영업활동", "사업내용", "업종"))
                         location_index = self._column_index(columns, ("소재지", "주소", "국가"))
                         note_index = self._column_index(columns, ("비고", "관계", "구분"))
+                        asset_index = self._column_index(columns, ("자산",))
+                        revenue_index = self._column_index(columns, ("매출액", "매출"))
+                        profit_index = self._column_index(columns, ("당기순손익", "당기순이익", "순손익", "순이익"))
+                        # A summary-financial table is linked to the ownership
+                        # table by entity name.  Preserve the disclosure's text
+                        # as-is: DART note tables do not expose a consistent unit
+                        # field that would make an automatic conversion reliable.
+                        if asset_index is not None and (revenue_index is not None or profit_index is not None) and stake_index is None:
+                            for values in table.itertuples(index=False, name=None):
+                                name = str(values[name_index] if name_index < len(values) else "").strip()
+                                key = self._subsidiary_name_key(name)
+                                if not name or key in {"회사명", "법인명", "합계", "nan", "none"}:
+                                    continue
+                                def field(index: int | None) -> str:
+                                    value = str(values[index] if index is not None and index < len(values) else "").strip()
+                                    return "" if value.lower() in {"nan", "none"} else value
+                                financials[key] = {
+                                    "자산(공시 표기)": field(asset_index),
+                                    "매출액(공시 표기)": field(revenue_index),
+                                    "당기순이익(공시 표기)": field(profit_index),
+                                }
+                            continue
                         # Summary-financial tables and narrative containers can
                         # also contain a company-name column; only use a genuine
                         # ownership table that exposes stake, business and location.
@@ -273,7 +349,7 @@ class DartFactPackCollector:
                             location = str(values[location_index] if location_index is not None and location_index < len(values) else "확인 필요").strip()
                             stake = str(values[stake_index] if stake_index is not None and stake_index < len(values) else "확인 필요").strip()
                             note = str(values[note_index] if note_index is not None and note_index < len(values) else "").strip()
-                            rows.append(
+                            ownership_rows.append(
                                 {
                                     "사업군": self._subsidiary_group(business, location),
                                     "자회사명": name,
@@ -288,11 +364,78 @@ class DartFactPackCollector:
                                     "출처 위치": f"{node.get('text', '주석')} · 표 {table_index}",
                                 }
                             )
-                        if rows:
-                            unique: dict[str, dict[str, str]] = {}
-                            for row in rows:
-                                unique.setdefault(_clean(row["자회사명"]), row)
-                            return list(unique.values())[:50]
+                    if ownership_rows:
+                        unique: dict[str, dict[str, str]] = {}
+                        for row in ownership_rows:
+                            key = self._subsidiary_name_key(row["자회사명"])
+                            if key not in unique:
+                                unique[key] = row
+                            if key in financials:
+                                unique[key].update(financials[key])
+                        return list(unique.values())[:50]
+        return []
+
+    @staticmethod
+    def _plain_text(value: str, limit: int = 12_000) -> str:
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = html.unescape(text).replace("\xa0", " ")
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n", text).strip()
+        return text[:limit]
+
+    def _corporate_report_sources(self, corp_code: str, years: list[int]) -> list[MatterFact]:
+        """Collect only named annual-report sections used for company overview."""
+        for year in sorted(years, reverse=True):
+            try:
+                filings = self.core.search_filings(self.api_key, corp_code, year, "annual")
+            except Exception:
+                continue
+            if filings.empty:
+                continue
+            report = filings[filings["report_role"] == "사업보고서"]
+            filing = (report.iloc[0] if not report.empty else filings.iloc[0]).to_dict()
+            receipt = str(filing.get("rcept_no", ""))
+            if not receipt:
+                continue
+            try:
+                nodes = self.core.parse_dart_tree_nodes(self.core.fetch_report_main_html(receipt))
+            except Exception:
+                continue
+            sections: list[MatterFact] = []
+            for node in nodes:
+                node_text = str(node.get("text", ""))
+                normalized = _clean(node_text)
+                category = ""
+                if "사업의내용" in normalized:
+                    category = "사업의 내용"
+                elif any(hint in normalized for hint in ("회사의연혁", "회사연혁", "연혁")):
+                    category = "회사 연혁"
+                if not category:
+                    continue
+                try:
+                    text = self._plain_text(self.core.fetch_viewer_html(node))
+                except Exception:
+                    continue
+                if len(text) < 100:
+                    continue
+                sections.append(
+                    MatterFact(
+                        category=category,
+                        fact=text,
+                        interpretation="사업보고서 원문 발췌",
+                        verification_status="verified",
+                        source_document_id=f"dart-section-{receipt}-{len(sections) + 1}",
+                        source_title=str(filing.get("report_nm", "사업보고서")),
+                        disclosure_date=str(filing.get("rcept_dt", "")),
+                        url=self.core.disclosure_url(receipt),
+                    )
+                )
+                if len(sections) >= 2:
+                    return sections
+            if sections:
+                return sections
         return []
 
     @staticmethod
@@ -378,6 +521,12 @@ class DartFactPackCollector:
                 )
 
         profile = self._company_profile(company["corp_code"])
+        governance = self._governance_snapshot(company["corp_code"], max(years))
+        profile.update({key: value for key, value in governance.items() if value not in (None, "")})
+        corporate_sources = self._corporate_report_sources(company["corp_code"], years)
+        corporate_analysis = analyze_corporate_profile(str(company.get("corp_name", request.identifier)), corporate_sources, self.gemini_api_key)
+        if corporate_analysis:
+            profile.update({key: value for key, value in corporate_analysis.items() if key != "chronology" and value not in (None, "", [])})
         subsidiaries = self._subsidiaries(company["corp_code"], years)
         entity = {
             "input_identifier": request.identifier,
@@ -387,6 +536,9 @@ class DartFactPackCollector:
             "listing_status": "listed" if company.get("stock_code") else "unlisted",
         }
         price_history = self._price_history(str(company.get("stock_code", ""))) if request.include_price_chart else []
+        if price_history and governance.get("issued_shares"):
+            entity["market_cap_krw"] = round(price_history[-1].close * governance["issued_shares"])
+            entity["market_price_date"] = price_history[-1].trading_date
         company_name = str(company.get("corp_name", request.identifier))
         source_matters = research_issue(company_name, request.issue_query)
         gemini_matters = analyze_issue(company_name, request.issue_query, source_matters, self.gemini_api_key)
@@ -408,6 +560,8 @@ class DartFactPackCollector:
             documents=list(document_index.values()),
             financial_facts=facts,
             corporate_profile=profile,
+            chronology=corporate_analysis.get("chronology", []) if corporate_analysis else [],
+            corporate_sources=corporate_sources,
             subsidiaries=subsidiaries,
             major_matters=major_matters,
             price_history=price_history,
