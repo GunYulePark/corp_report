@@ -70,10 +70,16 @@ def create_app() -> None:
             ui.label("OpenDART API 키는 로컬 설정 파일에서만 읽습니다.").classes("text-xs text-slate-500")
 
         status = ui.label("조건을 입력한 뒤 보고서를 생성하세요.").classes("text-slate-600")
+        with ui.row().classes("items-center gap-2") as loading_row:
+            ui.spinner(size="lg", color="primary")
+            ui.label("작업을 시작하는 중입니다…").classes("text-primary font-medium")
+        loading_row.visible = False
         result = ui.column().classes("w-full")
 
         async def generate() -> None:
             result.clear()
+            loading_row.visible = True
+            generate_button.disable()
             try:
                 report_request = ReportRequest(
                     identifier=str(identifier.value or "").strip(),
@@ -85,17 +91,22 @@ def create_app() -> None:
                 )
                 if not report_request.identifier:
                     raise ValueError("회사명 또는 종목코드를 입력하세요.")
-                status.text = "공시·재무정보를 수집하고 있습니다…"
+                status.text = "1/2 공시·재무정보와 요청 이슈를 수집하고 있습니다…"
+                await asyncio.sleep(0)
                 resolved_api_key = os.getenv("DART_API_KEY", "").strip() or _embedded_api_key()
                 collector = DartFactPackCollector(resolved_api_key)
                 pack = await run.io_bound(collector.collect, report_request)
                 pack.validation_results = validate_fact_pack(pack)
-                status.text = "Excel 보고서를 생성하고 있습니다…"
+                status.text = "2/2 Excel 보고서를 생성하고 있습니다. 시트·수식·주가 그래프를 작성 중입니다…"
+                await asyncio.sleep(0)
                 output_path = await run.io_bound(render_report, pack, OUTPUT_DIR)
             except Exception as exc:
                 status.text = f"생성 실패: {exc}"
                 ui.notify(str(exc), type="negative")
                 return
+            finally:
+                loading_row.visible = False
+                generate_button.enable()
 
             warnings = [item for item in pack.validation_results if item.get("severity") == "warning"]
             status.text = f"완료: {pack.entity.get('company_name')} 보고서를 생성했습니다. 검증 경고 {len(warnings)}건"
@@ -108,6 +119,6 @@ def create_app() -> None:
                             ui.label(f"• {warning.get('message', '')}")
             ui.notify("보고서 생성이 완료되었습니다.", type="positive")
 
-        ui.button("Excel 기업분석 보고서 생성", on_click=generate, icon="description").props("unelevated size=lg color=primary")
+        generate_button = ui.button("Excel 기업분석 보고서 생성", on_click=generate, icon="description").props("unelevated size=lg color=primary")
 
     ui.run(title="기업 분석 보고서 자동화", port=8080, reload=False)

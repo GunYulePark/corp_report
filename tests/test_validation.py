@@ -1,10 +1,12 @@
 import unittest
+from math import nan
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import openpyxl
 
 from corp_report.models import FactPack, FinancialFact, SourceDocument
+from corp_report.collector import _optional_int
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
 
@@ -51,6 +53,9 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(growth_display(-10, 5, profit_metric=True), "흑자전환")
         self.assertEqual(growth_display(5, -10, profit_metric=True), "적자전환")
         self.assertEqual(growth_display(0, 5), "N.M.")
+
+    def test_nan_is_not_converted_to_integer(self) -> None:
+        self.assertIsNone(_optional_int(nan))
 
     def test_balance_sheet_tie_out(self) -> None:
         results = validate_fact_pack(self._pack())

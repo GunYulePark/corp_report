@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import re
 from datetime import date, datetime, timedelta
@@ -33,6 +34,27 @@ def load_pipeline(path: str | None = None) -> ModuleType:
 
 def _clean(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _optional_int(value: object) -> int | None:
+    """Convert reported numeric values without turning missing values into errors."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if math.isfinite(number) else None
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def standard_account(account_name: object, account_id: object) -> str:
@@ -200,13 +222,14 @@ class DartFactPackCollector:
                 continue
             points = []
             for index, close in enumerate(closes):
-                if close is None:
+                close_value = _optional_float(close)
+                if close_value is None:
                     continue
                 points.append(
                     PricePoint(
                         trading_date=datetime.fromtimestamp(timestamps[index]).date().isoformat(),
-                        close=round(float(close), 2),
-                        volume=int(volumes[index]) if index < len(volumes) and volumes[index] is not None else None,
+                        close=round(close_value, 2),
+                        volume=_optional_int(volumes[index]) if index < len(volumes) else None,
                         source_url=url,
                     )
                 )
@@ -257,7 +280,7 @@ class DartFactPackCollector:
                         standard_account=standard_account(row.get("account_nm"), row.get("account_id")),
                         source_account=str(row.get("account_nm", "")),
                         account_id=str(row.get("account_id", "")),
-                        value_krw=int(amount) if amount is not None else None,
+                        value_krw=_optional_int(amount),
                         currency=str(row.get("currency", "KRW")),
                         source_document_id=source_id,
                         source_location="OpenDART fnlttSinglAcntAll.json",
