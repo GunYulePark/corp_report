@@ -34,19 +34,26 @@ ISSUE_CATEGORY_MAP = {
 # filer.  These are the standard items retrieved from the existing pipeline's
 # audit-report HTML parser only when that API produces no rows.
 AUDIT_ACCOUNT_SPECS = (
-    ("매출액", "매출"), ("영업이익", "영업이익"), ("당기순이익", "당기순이익"),
-    ("자산총계", "자산총계"), ("유동자산", "유동자산"), ("부채총계", "부채총계"),
-    ("유동부채", "유동부채"), ("자본총계", "자본총계"),
-    ("현금및현금성자산", "현금및현금성자산"), ("이자비용", "이자비용"),
+    ("매출액", ("매출",)), ("매출원가", ("매출원가",)),
+    ("영업이익", ("영업이익",)), ("당기순이익", ("당기순이익",)),
+    ("자산총계", ("자산총계",)), ("유동자산", ("유동자산",)),
+    ("현금및현금성자산", ("현금및현금성자산",)), ("매출채권", ("매출채권",)),
+    ("재고자산", ("재고자산",)), ("부채총계", ("부채총계",)),
+    ("유동부채", ("유동부채",)), ("자본총계", ("자본총계",)),
+    ("자본금", ("자본금",)),
+    ("영업활동현금흐름", ("영업활동으로인한현금흐름", "영업활동으로부터창출된현금흐름")),
+    ("이자비용", ("이자비용", "금융비용")),
 )
 
 AUDIT_ACCOUNT_LABELS = {
-    "매출액": {"매출", "매출액", "영업수익", "수익매출액"},
+    "매출액": {"매출", "매출액", "영업수익", "수익매출액"}, "매출원가": {"매출원가"},
     "영업이익": {"영업이익", "영업손실"},
     "당기순이익": {"당기순이익", "당기순손실", "당기순이익손실"},
     "자산총계": {"자산총계"}, "유동자산": {"유동자산"},
     "부채총계": {"부채총계"}, "유동부채": {"유동부채"},
-    "자본총계": {"자본총계"}, "현금및현금성자산": {"현금및현금성자산"},
+    "자본총계": {"자본총계"}, "자본금": {"자본금"}, "재고자산": {"재고자산"},
+    "매출채권": {"매출채권", "매출채권및기타채권"}, "현금및현금성자산": {"현금및현금성자산"},
+    "영업활동현금흐름": {"영업활동으로인한현금흐름", "영업활동으로부터창출된현금흐름"},
     "이자비용": {"이자비용", "금융비용", "이자비용및금융비용"},
 }
 
@@ -108,6 +115,14 @@ def standard_account(account_name: object, account_id: object) -> str:
     # condition; otherwise 매출원가 is incorrectly displayed as 매출액.
     if "매출원가" in name or "costofsales" in concept:
         return "매출원가"
+    if "매출채권" in name or "tradereceivables" in concept:
+        return "매출채권"
+    if "재고자산" in name or "inventories" in concept:
+        return "재고자산"
+    if name == "자본금" or "issuedcapital" in concept:
+        return "자본금"
+    if "영업활동으로인한현금흐름" in name or "영업활동으로부터창출된현금흐름" in name or "cashflowsfromusedinoperatingactivities" in concept or "cashflowsfromoperatingactivities" in concept:
+        return "영업활동현금흐름"
     # Do not treat receivables, gross profit, product-level revenue or cash-flow
     # disposal proceeds as the total top-line.  The report uses only a disclosed
     # total revenue concept (or an explicitly named total-revenue account).
@@ -253,25 +268,30 @@ class DartFactPackCollector:
             except Exception:
                 continue
             facts: list[FinancialFact] = []
-            for index, (standard, query) in enumerate(AUDIT_ACCOUNT_SPECS, start=1):
-                try:
-                    matches = self.core.search_account_in_viewer_html(
-                        viewer_html=viewer_html,
-                        account_query=query,
-                        exact=False,
-                        company_name=str(company.get("corp_name", "")),
-                        year=year,
-                        report_type="annual",
-                        fs_div=fs_div,
-                        rcept_no=receipt,
-                    )
-                except Exception:
-                    continue
-                for match in self._audit_matches(matches, standard):
+            for index, (standard, queries) in enumerate(AUDIT_ACCOUNT_SPECS, start=1):
+                matches: list[dict[str, Any]] = []
+                for query in queries:
+                    try:
+                        found = self.core.search_account_in_viewer_html(
+                            viewer_html=viewer_html,
+                            account_query=query,
+                            exact=False,
+                            company_name=str(company.get("corp_name", "")),
+                            year=year,
+                            report_type="annual",
+                            fs_div=fs_div,
+                            rcept_no=receipt,
+                        )
+                    except Exception:
+                        continue
+                    matches = self._audit_matches(found, standard)
+                    if matches:
+                        break
+                for match in matches:
                     amount = _optional_int(match.get("당기금액"))
                     if amount is None:
                         continue
-                    statement = "PL" if standard in {"매출액", "영업이익", "당기순이익", "이자비용"} else "BS"
+                    statement = "CF" if standard == "영업활동현금흐름" else "PL" if standard in {"매출액", "매출원가", "영업이익", "당기순이익", "이자비용"} else "BS"
                     facts.append(
                         FinancialFact(
                             fact_id=f"audit-{year}-annual-{index}",
@@ -285,7 +305,7 @@ class DartFactPackCollector:
                             is_cumulative=is_cumulative,
                             fs_div=fs_div,
                             statement=statement,
-                            stock_or_flow="flow" if statement == "PL" else "stock",
+                            stock_or_flow="flow" if statement in {"PL", "CF"} else "stock",
                             standard_account=standard,
                             source_account=str(match.get("재무항목", standard)),
                             account_id="audit_report_html",
@@ -553,6 +573,78 @@ class DartFactPackCollector:
                         return audit_rows
         return []
 
+    def _audit_parent_snapshot(self, corp_code: str, years: list[int]) -> tuple[dict[str, Any], MatterFact | None]:
+        """Fill an audit-only filer's parent relationship from an audited note.
+
+        The business-report shareholder APIs are usually unavailable for an
+        unlisted audit filer.  This deliberately reads only a table that labels
+        a party as ``지배기업`` and leaves the field blank when the note is not
+        explicit; it never guesses a group affiliation from the company name.
+        """
+        for year in sorted(years, reverse=True):
+            try:
+                filings = self.core.search_filings(self.api_key, corp_code, year, "annual")
+            except Exception:
+                continue
+            if filings.empty:
+                continue
+            for filing in filings.to_dict("records"):
+                receipt = str(filing.get("rcept_no", ""))
+                if not receipt:
+                    continue
+                try:
+                    nodes = self.core.parse_dart_tree_nodes(self.core.fetch_report_main_html(receipt))
+                except Exception:
+                    continue
+                for node in [item for item in nodes if "주석" in _clean(item.get("text", ""))][:2]:
+                    try:
+                        tables = pd.read_html(StringIO(self.core.fetch_viewer_html(node)))
+                    except Exception:
+                        continue
+                    for table_index, table in enumerate(tables, start=1):
+                        for values in table.fillna("").itertuples(index=False, name=None):
+                            cells = [str(value).strip() for value in values if str(value).strip()]
+                            text = " ".join(cells)
+                            if "지배기업" not in text:
+                                continue
+                            ratio_match = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+                            candidates = [
+                                value for value in cells
+                                if len(value) >= 2 and len(value) <= 80
+                                and not re.search(r"\d", value)
+                                and _clean(value) not in {"지배기업", "관계", "구분", "당사", "회사"}
+                                and "지배기업" not in value
+                            ]
+                            parent = candidates[0] if candidates else ""
+                            if not parent:
+                                continue
+                            ratio = float(ratio_match.group(1)) if ratio_match else None
+                            description = f"감사보고서 특수관계자 주석에서 지배기업을 {parent}로 기재"
+                            if ratio is not None:
+                                description += f"하고 지분율 {ratio:.2f}%를 표시한다."
+                            else:
+                                description += "."
+                            return (
+                                {
+                                    "parent_company": parent,
+                                    "parent_company_ratio": ratio,
+                                    "largest_holder": parent,
+                                    "largest_holder_relation": "지배기업(감사보고서 주석)",
+                                    "largest_holder_ratio": ratio,
+                                },
+                                MatterFact(
+                                    category="지배관계·감사보고서 주석",
+                                    fact=description,
+                                    interpretation="감사보고서만 제출하는 기업의 경우 사업보고서 주주현황 API 대신 감사보고서 주석의 명시 정보를 사용한다.",
+                                    verification_status="verified",
+                                    source_document_id=f"dart-parent-{receipt}",
+                                    source_title=str(filing.get("report_nm", "감사보고서")),
+                                    disclosure_date=str(filing.get("rcept_dt", "")),
+                                    url=self.core.disclosure_url(receipt),
+                                ),
+                            )
+        return {}, None
+
     @staticmethod
     def _plain_text(value: str, limit: int = 12_000) -> str:
         text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
@@ -562,6 +654,22 @@ class DartFactPackCollector:
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n\s*\n+", "\n", text).strip()
         return text[:limit]
+
+    @staticmethod
+    def _audit_overview_profile(sources: list[MatterFact]) -> dict[str, str]:
+        """Use an explicit audit-note purpose clause without generative inference."""
+        source = next((item for item in sources if item.category == "회사 개요·감사보고서 주석"), None)
+        if source is None:
+            return {}
+        text = re.sub(r"\s+", " ", source.fact)
+        purpose = re.search(r"당사는\s+(.{2,260}?(?:목적사업으로|사업을)\s*영위하고[^.]*\.)", text)
+        profile: dict[str, str] = {"source": "감사보고서 주석 일반사항 원문 기반"}
+        if purpose:
+            profile["business_summary"] = purpose.group(0).strip()
+        location = re.search(r"([가-힣A-Za-z0-9\-()·,\s]{5,100})에\s*위치하고\s*있습니다", text)
+        if location:
+            profile["audit_note_location"] = location.group(1).strip()
+        return profile
 
     def _corporate_report_sources(self, corp_code: str, years: list[int]) -> list[MatterFact]:
         """Collect only named annual-report sections used for company overview."""
@@ -590,6 +698,11 @@ class DartFactPackCollector:
                     category = "사업의 내용"
                 elif any(hint in normalized for hint in ("회사의연혁", "회사연혁", "연혁")):
                     category = "회사 연혁"
+                elif any(hint in normalized for hint in ("회사의개요", "회사개요", "영업의개요", "영업활동")):
+                    # Audit reports commonly label their only business
+                    # description as "I. 회사의 개요" rather than the
+                    # business-report section "사업의 내용".
+                    category = "회사 개요·감사보고서"
                 if not category:
                     continue
                 try:
@@ -610,8 +723,34 @@ class DartFactPackCollector:
                         url=self.core.disclosure_url(receipt),
                     )
                 )
-                if len(sections) >= 2:
+                if len(sections) >= 3:
                     return sections
+            # Audit-only filings expose a single top-level "주석" viewer.  Its
+            # opening "일반사항" normally contains the legal entity's business
+            # description, so retain just that bounded note rather than the
+            # entire financial-statement body.
+            if not any(item.category in {"사업의 내용", "회사 개요·감사보고서"} for item in sections):
+                note_node = next((node for node in nodes if "주석" in _clean(node.get("text", ""))), None)
+                if note_node:
+                    try:
+                        note_text = self._plain_text(self.core.fetch_viewer_html(note_node), limit=18_000)
+                    except Exception:
+                        note_text = ""
+                    general = re.search(r"(?:^|\n)\s*1\s*[.)]\s*(?:일반사항|회사.?개요).*?(?=(?:\n\s*2\s*[.)])|\Z)", note_text, flags=re.DOTALL)
+                    excerpt = (general.group(0) if general else note_text[:3_500]).strip()
+                    if len(excerpt) >= 100 and any(word in excerpt for word in ("사업", "제조", "판매", "의약", "서비스", "제품")):
+                        sections.append(
+                            MatterFact(
+                                category="회사 개요·감사보고서 주석",
+                                fact=excerpt[:3_500],
+                                interpretation="감사보고서 주석의 일반사항 원문 발췌",
+                                verification_status="verified",
+                                source_document_id=f"dart-audit-overview-{receipt}",
+                                source_title=str(filing.get("report_nm", "감사보고서")),
+                                disclosure_date=str(filing.get("rcept_dt", "")),
+                                url=self.core.disclosure_url(receipt),
+                            )
+                        )
             if sections:
                 return sections
         return []
@@ -704,8 +843,23 @@ class DartFactPackCollector:
         profile = self._company_profile(company["corp_code"])
         governance = self._governance_snapshot(company["corp_code"], max(years))
         profile.update({key: value for key, value in governance.items() if value not in (None, "")})
-        corporate_sources = [*self._corporate_report_sources(company["corp_code"], years), *company_context_sources(str(company.get("corp_name", request.identifier)))]
-        corporate_analysis = analyze_corporate_profile(str(company.get("corp_name", request.identifier)), corporate_sources, self.gemini_api_key)
+        parent_snapshot, parent_source = self._audit_parent_snapshot(company["corp_code"], years)
+        if not profile.get("largest_holder"):
+            profile.update({key: value for key, value in parent_snapshot.items() if value not in (None, "")})
+        corporate_sources = [
+            *self._corporate_report_sources(company["corp_code"], years),
+            *([parent_source] if parent_source else []),
+            *company_context_sources(str(company.get("corp_name", request.identifier)), str(profile.get("homepage", ""))),
+        ]
+        audit_overview = self._audit_overview_profile(corporate_sources)
+        for key, value in audit_overview.items():
+            if value and not profile.get(key):
+                profile[key] = value
+        analysis_sources = [
+            source for source in corporate_sources
+            if source.category in {"사업의 내용", "회사 연혁", "회사 개요·감사보고서", "공식 홈페이지 사업소개", "공식 사업소개"}
+        ]
+        corporate_analysis = analyze_corporate_profile(str(company.get("corp_name", request.identifier)), analysis_sources, self.gemini_api_key)
         if corporate_analysis:
             profile.update({key: value for key, value in corporate_analysis.items() if key != "chronology" and value not in (None, "", [])})
         for key, value in company_context_profile(str(company.get("corp_name", request.identifier))).items():

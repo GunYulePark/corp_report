@@ -65,7 +65,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(standard_account("매출원가", ""), "매출원가")
 
     def test_revenue_related_accounts_are_not_total_revenue(self) -> None:
-        self.assertEqual(standard_account("매출채권및기타채권", "ifrs-full_TradeAndOtherCurrentReceivables"), "매출채권및기타채권")
+        self.assertEqual(standard_account("매출채권및기타채권", "ifrs-full_TradeAndOtherCurrentReceivables"), "매출채권")
         self.assertEqual(standard_account("매출총이익", "ifrs-full_GrossProfit"), "매출총이익")
         self.assertEqual(standard_account("제품매출", "dart_RevenueFromSaleOfGoodsProduct"), "제품매출")
         self.assertEqual(standard_account("매출액", "ifrs-full_Revenue"), "매출액")
@@ -88,6 +88,20 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(matters[0].verification_status, "needs_review")
         self.assertTrue(matters[0].url.startswith("https://"))
 
+    def test_audit_overview_profile_uses_only_explicit_purpose_clause(self) -> None:
+        source = MatterFact(
+            "회사 개요·감사보고서 주석",
+            "당사는 원료의약품의 제조, 판매 및 수출입업 등을 목적사업으로 영위하고 있습니다.",
+            "감사보고서 주석의 일반사항 원문 발췌",
+            "verified",
+            "audit-overview",
+            "감사보고서",
+            "2026-03-01",
+            "https://example.com/audit",
+        )
+        profile = DartFactPackCollector._audit_overview_profile([source])
+        self.assertIn("원료의약품", profile["business_summary"])
+
     def test_balance_sheet_tie_out(self) -> None:
         results = validate_fact_pack(self._pack())
         self.assertFalse([result for result in results if result["rule"] == "balance_sheet_tie_out"])
@@ -96,9 +110,18 @@ class ValidationTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             output = render_report(self._pack(), Path(temp_dir))
             workbook = openpyxl.load_workbook(output, data_only=False)
-            self.assertEqual(len(workbook.sheetnames), 7)
+            self.assertEqual(workbook.sheetnames, ["본장", "재무", "재무 data", "자회사 등", "주요사항"])
             self.assertTrue(workbook["재무"]["C6"].value.startswith("=IF(COUNTIFS"))
             self.assertTrue(workbook["본장"]["I31"].value.startswith("='재무'!"))
+
+    def test_renderer_adds_price_sheets_only_for_listed_company(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            pack = self._pack()
+            pack.entity.update({"listing_status": "listed", "stock_code": "005930"})
+            output = render_report(pack, Path(temp_dir))
+            workbook = openpyxl.load_workbook(output, data_only=False)
+            self.assertIn("주가 data", workbook.sheetnames)
+            self.assertIn("주가", workbook.sheetnames)
             self.assertEqual(workbook["주가 data"]["A1"].value, "거래일")
             self.assertEqual(workbook["주가"]["A13"].value, "거래일")
 

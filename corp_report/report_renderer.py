@@ -213,61 +213,96 @@ def _write_financial_sheet(ws, pack: FactPack) -> None:
     ws["B4"].fill = PatternFill("solid", fgColor=LIGHT_BLUE)
     ws["B4"].alignment = CENTER
     ws["B4"].border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-    for col, label in enumerate(periods, start=3):
-        cell = ws.cell(4, col, label)
-        cell.font = HEADER
-        cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
-        cell.alignment = CENTER
-        cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-        ws.column_dimensions[get_column_letter(col)].width = 14
+    for index, label in enumerate(periods):
+        amount_col = 3 + index * 2
+        for col, header in ((amount_col, label), (amount_col + 1, "%")):
+            cell = ws.cell(4, col, header)
+            cell.font = HEADER
+            cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+            cell.alignment = CENTER
+            cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+            ws.column_dimensions[get_column_letter(col)].width = 14 if col == amount_col else 10
 
     rows = [
-        (6, "매출액"), (7, "영업이익"), (8, "당기순이익"), (10, "자산총계"), (11, "유동자산"),
-        (12, "부채총계"), (13, "유동부채"), (14, "자본총계"), (15, "이자비용"), (16, "차입금"), (17, "현금및현금성자산"),
+        (6, "매출액"), (7, "매출원가"), (8, "영업이익"), (9, "당기순이익"),
+        (11, "자산총계"), (12, "유동자산"), (13, "현금및현금성자산"), (14, "매출채권"), (15, "재고자산"),
+        (17, "부채총계"), (18, "유동부채"), (19, "자본총계"), (20, "자본금"),
+        (21, "영업활동현금흐름"), (22, "이자비용"), (23, "차입금"),
     ]
+    major_rows = {"매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"}
+    composition_denominator = {
+        6: 6, 7: 6, 8: 6, 9: 6, 11: 11, 12: 11, 13: 11, 14: 11,
+        15: 11, 17: 11, 18: 17, 19: 11, 20: 11, 21: 6, 22: 6, 23: 11,
+    }
     for row, label in rows:
-        ws.cell(row, 2, label).font = HEADER if label in {"매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"} else BODY
-        for col in range(3, 3 + len(periods)):
-            cell = ws.cell(row, col)
-            cell.value = _amount_formula(f"{get_column_letter(col)}$4", f"$B{row}", basis)
+        ws.cell(row, 2, label).font = HEADER if label in major_rows else BODY
+        for index, _ in enumerate(periods):
+            amount_col = 3 + index * 2
+            amount_letter = get_column_letter(amount_col)
+            cell = ws.cell(row, amount_col)
+            cell.value = _amount_formula(f"{amount_letter}$4", f"$B{row}", basis)
             cell.number_format = NUMBER_FORMAT
             cell.font = Font(name="Arial", size=10, color="008000")
             cell.alignment = CENTER
             cell.border = Border(bottom=HAIR)
-    for row, label in [(19, "성장성"), (23, "안정성")]:
+            percent = ws.cell(row, amount_col + 1)
+            denominator_row = composition_denominator[row]
+            percent.value = f'=IF(OR(NOT(ISNUMBER({amount_letter}{row})),NOT(ISNUMBER({amount_letter}{denominator_row})),{amount_letter}{denominator_row}=0),"N.M.",{amount_letter}{row}/{amount_letter}{denominator_row})'
+            percent.number_format = PERCENT_FORMAT
+            percent.alignment = CENTER
+            percent.border = Border(bottom=HAIR)
+    for row, label in [(26, "성장성"), (30, "수익성"), (34, "안정성"), (40, "활동성·현금흐름")]:
         ws.cell(row, 2, label).font = HEADER
         ws.cell(row, 2).fill = PatternFill("solid", fgColor=GREY)
-    ratio_rows = [(20, "매출액증감률", 6, False), (21, "영업이익증감률", 7, True), (24, "영업이익률", 7, None), (25, "순이익률", 8, None), (26, "부채비율", 12, "equity"), (27, "유동비율", 11, "current_liability"), (28, "순차입금", 16, "net_debt"), (29, "이자보상배율", 7, "coverage")]
+    ratio_rows = [
+        (27, "매출액증감률", 6, False), (28, "영업이익증감률", 8, True),
+        (31, "영업이익률", 8, None), (32, "순이익률", 9, None),
+        (35, "부채비율", 17, "equity"), (36, "유동비율", 12, "current_liability"),
+        (37, "순차입금", 23, "net_debt"), (38, "이자보상배율", 8, "coverage"),
+        (41, "재고자산회전율", 7, "inventory_turnover"), (42, "재고자산회전일수", 7, "inventory_days"),
+        (43, "영업활동현금흐름/매출", 21, None),
+    ]
     for row, label, source_row, kind in ratio_rows:
         ws.cell(row, 2, label).font = BODY
-        for col in range(3, 3 + len(periods)):
+        for index, _ in enumerate(periods):
+            col = 3 + index * 2
             letter = get_column_letter(col)
             cell = ws.cell(row, col)
             if kind is False:
-                prev = get_column_letter(col - 1)
-                cell.value = "=\"N/A\"" if col == 3 else f'=IF(OR(RIGHT({letter}$4,1)="H",RIGHT({letter}$4,1)="Q"),"N/A",IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1)))'
+                prev = get_column_letter(col - 2)
+                cell.value = "=\"N/A\"" if index == 0 else f'=IF(OR(RIGHT({letter}$4,1)="H",RIGHT({letter}$4,1)="Q"),"N/A",IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1)))'
                 cell.number_format = PERCENT_FORMAT
             elif kind is True:
-                prev = get_column_letter(col - 1)
-                cell.value = "=\"N/A\"" if col == 3 else f'=IF(OR(RIGHT({letter}$4,1)="H",RIGHT({letter}$4,1)="Q"),"N/A",IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF(AND({prev}{source_row}<0,{letter}{source_row}>0),"흑자전환",IF(AND({prev}{source_row}>0,{letter}{source_row}<0),"적자전환",IF(AND({prev}{source_row}<0,{letter}{source_row}<0),IF({letter}{source_row}>{prev}{source_row},"적자축소","적자확대"),IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1))))))'
+                prev = get_column_letter(col - 2)
+                cell.value = "=\"N/A\"" if index == 0 else f'=IF(OR(RIGHT({letter}$4,1)="H",RIGHT({letter}$4,1)="Q"),"N/A",IF(OR(NOT(ISNUMBER({prev}{source_row})),NOT(ISNUMBER({letter}{source_row}))),"N/A",IF(AND({prev}{source_row}<0,{letter}{source_row}>0),"흑자전환",IF(AND({prev}{source_row}>0,{letter}{source_row}<0),"적자전환",IF(AND({prev}{source_row}<0,{letter}{source_row}<0),IF({letter}{source_row}>{prev}{source_row},"적자축소","적자확대"),IF({prev}{source_row}<=0,"N.M.",{letter}{source_row}/{prev}{source_row}-1))))))'
                 cell.number_format = PERCENT_FORMAT
             elif kind is None:
                 cell.value = f'=IF(OR(NOT(ISNUMBER({letter}{source_row})),NOT(ISNUMBER({letter}6)),{letter}6<=0),"N.M.",{letter}{source_row}/{letter}6)'
                 cell.number_format = PERCENT_FORMAT
             elif kind == "equity":
-                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}12)),NOT(ISNUMBER({letter}14)),{letter}14<=0),"N.M.",{letter}12/{letter}14)'
+                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}17)),NOT(ISNUMBER({letter}19)),{letter}19<=0),"N.M.",{letter}17/{letter}19)'
                 cell.number_format = PERCENT_FORMAT
             elif kind == "current_liability":
-                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}11)),NOT(ISNUMBER({letter}13)),{letter}13<=0),"N.M.",{letter}11/{letter}13)'
+                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}12)),NOT(ISNUMBER({letter}18)),{letter}18<=0),"N.M.",{letter}12/{letter}18)'
                 cell.number_format = PERCENT_FORMAT
             elif kind == "net_debt":
-                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}16)),NOT(ISNUMBER({letter}17))),"N/A",{letter}16-{letter}17)'
+                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}23)),NOT(ISNUMBER({letter}13))),"N/A",{letter}23-{letter}13)'
                 cell.number_format = NUMBER_FORMAT
+            elif kind == "inventory_turnover":
+                prev = get_column_letter(col - 2)
+                cell.value = "=\"N/A\"" if index == 0 else f'=IF(OR(NOT(ISNUMBER({letter}7)),NOT(ISNUMBER({letter}15)),NOT(ISNUMBER({prev}15)),({letter}15+{prev}15)<=0),"N.M.",{letter}7/AVERAGE({prev}15,{letter}15))'
+                cell.number_format = '0.0x;[Red](0.0x);-'
+            elif kind == "inventory_days":
+                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}41)),{letter}41<=0),"N.M.",365/{letter}41)'
+                cell.number_format = '0.0;[Red](0.0);-'
             else:
-                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}7)),NOT(ISNUMBER({letter}15)),{letter}15<=0),"N.M.",{letter}7/{letter}15)'
+                cell.value = f'=IF(OR(NOT(ISNUMBER({letter}8)),NOT(ISNUMBER({letter}22)),{letter}22<=0),"N.M.",{letter}8/{letter}22)'
                 cell.number_format = '0.0x;[Red](0.0x);-'
             cell.alignment = CENTER
             cell.border = Border(bottom=HAIR)
+            percent = ws.cell(row, col + 1)
+            percent.value = ""
+            percent.border = Border(bottom=HAIR)
     ws.column_dimensions["B"].width = 20
     ws.freeze_panes = "C5"
     ws.sheet_properties.pageSetUpPr.fitToPage = True
@@ -288,7 +323,8 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     profile_fields = [
         ("상호", company), ("대표자", profile.get("ceo_name", "확인 필요")), ("소재지", profile.get("address", "확인 필요")),
         ("설립일자", profile.get("establishment_date", "확인 필요")), ("종목코드", pack.entity.get("stock_code") or "비상장"),
-        ("기업형태", "상장" if pack.entity.get("listing_status") == "listed" else "비상장"), ("재무제표 기준", _basis_label(pack.reporting_policy["primary_fs_basis"])),
+        ("기업형태", "상장" if pack.entity.get("listing_status") == "listed" else "비상장"),
+        ("종속관계", f"{profile.get('parent_company')} {profile.get('parent_company_ratio'):.2f}%" if profile.get("parent_company") and isinstance(profile.get("parent_company_ratio"), (int, float)) else profile.get("parent_company", "확인 필요")),
         ("종업원 수", f"{profile.get('employee_count'):,}명" if isinstance(profile.get("employee_count"), int) else "확인 필요"),
         ("최대주주", f"{profile.get('largest_holder', '확인 필요')} {profile.get('largest_holder_ratio', 0):.2f}%" if isinstance(profile.get("largest_holder_ratio"), (int, float)) else "확인 필요"),
         ("시가총액", _display_market_cap(pack.entity.get("market_cap_krw"), pack.entity.get("market_price_date"))),
@@ -368,11 +404,11 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
         cell.alignment = CENTER
     summary_rows = [
-        (31, "매출액", 6, False), (32, "매출액증감률", 20, True),
-        (33, "영업이익", 7, False), (34, "영업이익증감률", 21, True),
-        (35, "당기순이익", 8, False), (36, "영업이익률", 24, True), (37, "순이익률", 25, True),
-        (38, "자산총계", 10, False), (39, "부채총계", 12, False), (40, "자본총계", 14, False),
-        (41, "부채비율", 26, True), (42, "유동비율", 27, True), (43, "순차입금", 28, False), (44, "이자보상배율", 29, False),
+        (31, "매출액", 6, False), (32, "매출액증감률", 27, True),
+        (33, "영업이익", 8, False), (34, "영업이익증감률", 28, True),
+        (35, "당기순이익", 9, False), (36, "영업이익률", 31, True), (37, "순이익률", 32, True),
+        (38, "자산총계", 11, False), (39, "부채총계", 17, False), (40, "자본총계", 19, False),
+        (41, "부채비율", 35, True), (42, "유동비율", 36, True), (43, "순차입금", 37, False), (44, "이자보상배율", 38, False),
     ]
     for row, label, financial_row, is_percent in summary_rows:
         ws.merge_cells(start_row=row, start_column=5, end_row=row, end_column=8)
@@ -380,7 +416,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         for period_index, _ in enumerate(periods):
             start_col = 9 + period_index * 5
             end_col = start_col + 4
-            source_col = get_column_letter(3 + len(_periods(pack)) - len(periods) + period_index)
+            source_col = get_column_letter(3 + (len(_periods(pack)) - len(periods) + period_index) * 2)
             ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
             ws.cell(row, start_col, f"='재무'!{source_col}{financial_row}")
             ws.cell(row, start_col).number_format = PERCENT_FORMAT if is_percent else NUMBER_FORMAT
@@ -429,11 +465,6 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         chart.legend = None
         chart.dataLabels = DataLabelList()
         ws.add_chart(chart, "T51")
-    elif pack.entity.get("listing_status") != "listed":
-        ws.merge_cells("T50:AH50")
-        ws["T50"] = "주가 추이: 비상장으로 시장가격 정보 없음"
-        ws["T50"].alignment = CENTER
-
     _style_section(ws, 68, 4, 38, "라. 자회사 등 현황")
     subsidiary_headers = [(5, 8, "사업군"), (9, 14, "자회사명"), (15, 18, "지분율"), (19, 34, "사업영역·비고")]
     for start_col, end_col, label in subsidiary_headers:
@@ -638,14 +669,16 @@ def render_report(pack: FactPack, output_dir: Path) -> Path:
     summary = workbook.active
     financial = workbook.create_sheet()
     financial_data = workbook.create_sheet()
-    price = workbook.create_sheet()
-    price_data = workbook.create_sheet()
     subsidiaries = workbook.create_sheet()
     matters = workbook.create_sheet()
     _write_data_sheet(financial_data, pack)
     _write_financial_sheet(financial, pack)
-    _write_price_data_sheet(price_data, pack)
-    _write_price_sheet(price, pack)
+    price_data = None
+    if pack.entity.get("listing_status") == "listed" and pack.price_history:
+        price = workbook.create_sheet()
+        price_data = workbook.create_sheet()
+        _write_price_data_sheet(price_data, pack)
+        _write_price_sheet(price, pack)
     _write_summary_sheet(summary, pack, price_data)
     _write_subsidiary_sheet(subsidiaries, pack)
     _write_matters_sheet(matters, pack)

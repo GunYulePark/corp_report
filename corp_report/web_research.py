@@ -120,8 +120,53 @@ def _hanmi_obesity_comparison(company_name: str, issue_query: str) -> list[Matte
     ]
 
 
-def company_context_sources(company_name: str) -> list[MatterFact]:
-    """Return narrow, source-linked company context when an audit report lacks a business section."""
+def _official_homepage_source(company_name: str, homepage: str) -> list[MatterFact]:
+    """Capture a bounded official-site excerpt for audit-only company profiles.
+
+    This is an evidence pack, not a crawler: it uses the homepage registered in
+    OpenDART, strips navigation/script markup, and preserves the page URL.  The
+    Gemini step may summarize it only with this source ID; unusable or short
+    pages are simply ignored.
+    """
+    url = homepage.strip()
+    if not url:
+        return []
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        url = f"https://{url.lstrip('/') }"
+    try:
+        response = requests.get(url, headers=USER_AGENT, timeout=12)
+        response.raise_for_status()
+    except requests.RequestException:
+        return []
+    content_type = response.headers.get("Content-Type", "").lower()
+    if "html" not in content_type:
+        return []
+    page = response.text
+    description = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)', page, flags=re.IGNORECASE)
+    main = re.sub(r"(?is)<(script|style|noscript|svg).*?>.*?</\1>", " ", page)
+    main = re.sub(r"(?is)<(header|footer|nav).*?>.*?</\1>", " ", main)
+    main = html.unescape(re.sub(r"<[^>]+>", " ", main)).replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", main).strip()
+    if description:
+        text = f"{html.unescape(description.group(1)).strip()} {text}"
+    if len(text) < 80:
+        return []
+    return [
+        MatterFact(
+            category="공식 홈페이지 사업소개",
+            fact=text[:3_500],
+            interpretation="OpenDART 회사개황에 등록된 공식 홈페이지에서 자동 수집한 원문 발췌이며, 사업·전략 요약은 이 원문에 한정해 생성한다.",
+            verification_status="verified",
+            source_document_id=f"official-homepage-{_compact(company_name)[:30] or 'company'}",
+            source_title=f"{company_name} 공식 홈페이지",
+            disclosure_date="",
+            url=response.url,
+        )
+    ]
+
+
+def _curated_context_sources(company_name: str) -> list[MatterFact]:
+    """Keep verified supplementary sources separate from the generic source pack."""
     if _compact(company_name) != "동아제약":
         return []
     return [
@@ -136,6 +181,13 @@ def company_context_sources(company_name: str) -> list[MatterFact]:
             url="https://yongmalogis.co.kr/resources/img/kr/DA_2024AR.pdf",
         )
     ]
+
+
+def company_context_sources(company_name: str, homepage: str = "") -> list[MatterFact]:
+    """Build a source pack for companies whose audit report lacks a business section."""
+    sources = _official_homepage_source(company_name, homepage)
+    sources.extend(_curated_context_sources(company_name))
+    return sources
 
 
 def company_context_profile(company_name: str) -> dict[str, object]:

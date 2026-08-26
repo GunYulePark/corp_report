@@ -186,7 +186,7 @@ def analyze_corporate_profile(company_name: str, sources: list[MatterFact], api_
     model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     source_text = json.dumps(_source_payload(sources), ensure_ascii=False, separators=(",", ":"))
     prompt = f"""당신은 한국 기업분석 보고서 작성자다. 회사는 {company_name}이다.
-아래 SOURCE는 사업보고서 원문에서 수집한 사업의 내용 및 회사 연혁이다. SOURCE만 근거로 JSON을 작성하라.
+아래 SOURCE는 사업보고서 또는 감사보고서의 회사 개요·사업의 내용·회사 연혁 및 공식 홈페이지 원문에서 수집했다. SOURCE만 근거로 JSON을 작성하라.
 사업개요는 2문장 이내, 성장전략은 2문장 이내, 핵심역량은 최대 4개로 작성한다.
 business_summary·growth_strategy·core_competencies·연혁의 모든 항목에 정확한 source_ids를 하나 이상 넣어야 한다.
 성장전략은 신약개발, 투자, 증설, 시장확대처럼 명시된 전략만 쓴다. 사내 업무도구·일반 규정·무관한 운영 문구는 전략이나 핵심역량으로 쓰지 말고, 근거가 부족하면 text에 '확인 필요'라고 쓴다.
