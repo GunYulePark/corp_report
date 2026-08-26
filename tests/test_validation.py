@@ -67,4 +67,4 @@ class ValidationTests(unittest.TestCase):
             workbook = openpyxl.load_workbook(output, data_only=False)
             self.assertEqual(len(workbook.sheetnames), 5)
             self.assertTrue(workbook["재무"]["C6"].value.startswith("=IF(COUNTIFS"))
-            self.assertTrue(workbook["●테스트"]["I17"].value.startswith("='재무'!"))
+            self.assertTrue(workbook["본장"]["I17"].value.startswith("='재무'!"))

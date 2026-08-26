@@ -64,7 +64,7 @@ def create_app() -> None:
                 basis = ui.select({"OFS": "별도 (기본)", "CFS": "연결"}, value="OFS", label="재무제표 기준").classes("w-48")
                 years = ui.input("재무연도", value=",".join(str(year) for year in range(date.today().year - 4, date.today().year)), placeholder="예: 2022,2023,2024,2025").classes("w-72")
             with ui.row().classes("w-full gap-4 items-center"):
-                issue = ui.input("확인할 이슈", placeholder="예: 투자, 계약, 인허가, 소송, M&A").classes("w-[32rem]")
+                issue = ui.input("이슈 키워드", placeholder="예: 투자, 계약, 인허가, 소송, M&A · 비워두면 최근 주요 공시").classes("w-[32rem]")
                 latest_interim = ui.checkbox("최신 분기·반기 포함", value=True)
                 price_chart = ui.checkbox("상장사 주가 추이 포함", value=True)
             ui.label("OpenDART API 키는 로컬 설정 파일에서만 읽습니다.").classes("text-xs text-slate-500")

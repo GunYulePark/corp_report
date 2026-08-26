@@ -18,6 +18,12 @@ from .models import FactPack, FinancialFact, MatterFact, PricePoint, ReportReque
 DEFAULT_PIPELINE_PATH = Path(r"C:\Users\CKD\dart-fss\dart_app_4.py")
 REPORT_LABELS = {"annual": "사업보고서", "half": "반기보고서", "quarter1": "분기보고서", "quarter3": "분기보고서"}
 FS_LABELS = {"OFS": "별도", "CFS": "연결"}
+ISSUE_CATEGORY_MAP = {
+    "계약": "계약·수주", "수주": "계약·수주", "공급": "계약·수주", "투자": "투자", "시설": "투자",
+    "양수": "M&A", "합병": "M&A", "분할": "M&A", "소송": "소송·리스크", "횡령": "리스크",
+    "유상증자": "자금조달", "전환사채": "자금조달", "신주인수권": "자금조달", "자사주": "주주환원",
+    "인허가": "인허가", "임상": "임상·인허가",
+}
 
 
 def load_pipeline(path: str | None = None) -> ModuleType:
@@ -171,14 +177,15 @@ class DartFactPackCollector:
         }
 
     def _issue_matters(self, corp_code: str, issue_query: str, years: list[int]) -> list[MatterFact]:
-        if not issue_query.strip() or not years:
+        if not years:
             return []
-        start, end = min(years), max(years)
+        start = date(min(years), 1, 1)
+        end = min(date(max(years) + 1, 12, 31), date.today())
         try:
             payload = self.core.call_open_dart_json(
                 "list.json",
                 self.api_key,
-                {"corp_code": corp_code, "bgn_de": f"{start}0101", "end_de": f"{end + 1}1231", "page_count": "100", "sort": "date", "sort_mth": "desc"},
+                {"corp_code": corp_code, "bgn_de": start.strftime("%Y%m%d"), "end_de": end.strftime("%Y%m%d"), "page_count": "100", "sort": "date", "sort_mth": "desc"},
             )
         except Exception:
             return []
@@ -186,14 +193,21 @@ class DartFactPackCollector:
         results: list[MatterFact] = []
         for row in payload.get("list", []):
             title = str(row.get("report_nm", ""))
-            if terms and not any(term in _clean(title) for term in terms):
+            normalized_title = _clean(title)
+            if terms and not any(term in normalized_title for term in terms):
                 continue
+            category = next((label for keyword, label in ISSUE_CATEGORY_MAP.items() if _clean(keyword) in normalized_title), "최근 공시")
+            interpretation = (
+                "공시 제목 기준의 1차 분류입니다. 세부 조건과 재무·사업상 영향은 원문 검토 필요"
+                if category == "최근 공시"
+                else f"{category} 관련 공시입니다. 거래 조건과 재무·사업상 영향은 원문 검토 필요"
+            )
             receipt = str(row.get("rcept_no", ""))
             results.append(
                 MatterFact(
-                    category="요청 이슈",
+                    category=category if not terms else f"요청 이슈·{category}",
                     fact=title,
-                    interpretation="공시 제목만으로 재무·사업상 영향을 단정할 수 없어 원문 검토 필요",
+                    interpretation=interpretation,
                     verification_status="needs_review",
                     source_document_id=f"dart-{receipt}",
                     source_title=title,
@@ -201,7 +215,7 @@ class DartFactPackCollector:
                     url=self.core.disclosure_url(receipt) if receipt else "",
                 )
             )
-            if len(results) >= 20:
+            if len(results) >= 12:
                 break
         return results
 
@@ -212,9 +226,9 @@ class DartFactPackCollector:
         period1 = int((datetime.now() - timedelta(days=370)).timestamp())
         period2 = int(datetime.now().timestamp())
         for suffix in ("KS", "KQ"):
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_code}.{suffix}?period1={period1}&period2={period2}&interval=1d"
+            url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_code}.{suffix}?period1={period1}&period2={period2}&interval=1d"
             try:
-                payload = requests.get(url, timeout=20).json()["chart"]["result"][0]
+                payload = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20).json()["chart"]["result"][0]
                 closes = payload["indicators"]["quote"][0]["close"]
                 volumes = payload["indicators"]["quote"][0].get("volume", [])
                 timestamps = payload["timestamp"]
