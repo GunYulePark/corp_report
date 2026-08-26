@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 from datetime import date
 from pathlib import Path
@@ -18,12 +19,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 load_dotenv(PROJECT_ROOT / ".env")
 
-try:
-    from .local_settings import DART_API_KEY as EMBEDDED_DART_API_KEY
-except ImportError:
-    EMBEDDED_DART_API_KEY = ""
+def _embedded_api_key() -> str:
+    """Load the local-only key on each report run so a browser refresh is unnecessary."""
+    settings_path = PROJECT_ROOT / "corp_report" / "local_settings.py"
+    if not settings_path.exists():
+        return ""
+    try:
+        spec = importlib.util.spec_from_file_location("corp_report_runtime_settings", settings_path)
+        if spec is None or spec.loader is None:
+            return ""
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return str(getattr(module, "DART_API_KEY", "")).strip()
+    except Exception:
+        return ""
 
-DEFAULT_DART_API_KEY = os.getenv("DART_API_KEY", EMBEDDED_DART_API_KEY)
+
+DEFAULT_DART_API_KEY = os.getenv("DART_API_KEY", _embedded_api_key())
 
 
 def _parse_years(text: str) -> list[int]:
@@ -78,7 +90,8 @@ def create_app() -> None:
                 if not report_request.identifier:
                     raise ValueError("회사명 또는 종목코드를 입력하세요.")
                 status.text = "공시·재무정보를 수집하고 있습니다…"
-                collector = DartFactPackCollector(str(api_key.value or ""))
+                resolved_api_key = str(api_key.value or "").strip() or os.getenv("DART_API_KEY", "").strip() or _embedded_api_key()
+                collector = DartFactPackCollector(resolved_api_key)
                 pack = await run.io_bound(collector.collect, report_request)
                 pack.validation_results = validate_fact_pack(pack)
                 status.text = "Excel 보고서를 생성하고 있습니다…"
