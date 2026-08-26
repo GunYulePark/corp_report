@@ -5,11 +5,13 @@ import math
 import os
 import re
 from datetime import date, datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
 import requests
 
 from .models import FactPack, FinancialFact, PricePoint, ReportRequest, SourceDocument, now_iso
@@ -180,6 +182,120 @@ class DartFactPackCollector:
         }
 
     @staticmethod
+    def _flat_columns(frame: pd.DataFrame) -> list[str]:
+        columns = []
+        for column in frame.columns:
+            values = column if isinstance(column, tuple) else (column,)
+            labels = [str(value) for value in values if str(value).strip() and not str(value).lower().startswith("unnamed")]
+            # With a two-level header the lower level gives the actual field
+            # (for example, 당기말 / 지분율(%)), not a merged parent heading.
+            text = labels[-1] if labels else ""
+            columns.append(re.sub(r"\s+", "", text))
+        return columns
+
+    @staticmethod
+    def _column_index(columns: list[str], keywords: tuple[str, ...]) -> int | None:
+        return next((index for index, value in enumerate(columns) if any(keyword in value for keyword in keywords)), None)
+
+    @staticmethod
+    def _subsidiary_group(business: str, location: str) -> str:
+        text = _clean(f"{business} {location}")
+        if any(word in text for word in ("연구", "임상", "바이오", "신약")):
+            return "연구개발·바이오"
+        if any(word in text for word in ("제조", "생산", "공장")):
+            return "제조"
+        if any(word in text for word in ("유통", "판매", "도매")):
+            return "유통·판매"
+        if any(word in text for word in ("미국", "중국", "일본", "유럽", "해외")):
+            return "해외사업"
+        return "기타"
+
+    def _subsidiaries(self, corp_code: str, years: list[int]) -> list[dict[str, str]]:
+        """Extract subsidiary rows from the latest annual-report note table when available.
+
+        This is intentionally independent of the selected OFS/CFS financial basis:
+        subsidiary coverage is a group disclosure, so it is sourced from the
+        annual report rather than inferred from an individual financial statement.
+        """
+        if not years:
+            return []
+        for year in sorted(years, reverse=True):
+            try:
+                filings = self.core.search_filings(self.api_key, corp_code, year, "annual")
+            except Exception:
+                continue
+            if filings.empty:
+                continue
+            ordered = filings[filings["report_role"] == "사업보고서"]
+            records = (ordered if not ordered.empty else filings).to_dict("records")
+            for filing in records:
+                receipt = str(filing.get("rcept_no", ""))
+                if not receipt:
+                    continue
+                try:
+                    nodes = self.core.parse_dart_tree_nodes(self.core.fetch_report_main_html(receipt))
+                except Exception:
+                    continue
+                note_nodes = [
+                    node for node in nodes
+                    if any(hint in _clean(node.get("text", "")) for hint in ("종속기업", "연결대상", "타법인출자"))
+                ]
+                for node in note_nodes[:8]:
+                    try:
+                        tables = pd.read_html(StringIO(self.core.fetch_viewer_html(node)))
+                    except Exception:
+                        continue
+                    for table_index, table in enumerate(tables, start=1):
+                        if table.empty or len(table.columns) < 2:
+                            continue
+                        if any(isinstance(column, tuple) and len(column) > 2 for column in table.columns):
+                            continue
+                        columns = self._flat_columns(table)
+                        name_index = self._column_index(columns, ("회사명", "법인명", "종속기업", "피투자회사"))
+                        if name_index is None:
+                            continue
+                        stake_index = self._column_index(columns, ("지분율", "소유지분", "지분"))
+                        business_index = self._column_index(columns, ("주요사업", "주요영업", "영업활동", "사업내용", "업종"))
+                        location_index = self._column_index(columns, ("소재지", "주소", "국가"))
+                        note_index = self._column_index(columns, ("비고", "관계", "구분"))
+                        # Summary-financial tables and narrative containers can
+                        # also contain a company-name column; only use a genuine
+                        # ownership table that exposes stake, business and location.
+                        if stake_index is None or business_index is None or location_index is None:
+                            continue
+                        rows: list[dict[str, str]] = []
+                        for values in table.itertuples(index=False, name=None):
+                            name = str(values[name_index] if name_index < len(values) else "").strip()
+                            compact_name = _clean(name)
+                            if not name or compact_name in {"회사명", "법인명", "종속기업", "합계", "nan", "none"} or len(name) < 2 or len(name) > 120:
+                                continue
+                            business = str(values[business_index] if business_index is not None and business_index < len(values) else "확인 필요").strip()
+                            location = str(values[location_index] if location_index is not None and location_index < len(values) else "확인 필요").strip()
+                            stake = str(values[stake_index] if stake_index is not None and stake_index < len(values) else "확인 필요").strip()
+                            note = str(values[note_index] if note_index is not None and note_index < len(values) else "").strip()
+                            rows.append(
+                                {
+                                    "사업군": self._subsidiary_group(business, location),
+                                    "자회사명": name,
+                                    "지분율": stake or "확인 필요",
+                                    "사업영역": business or "확인 필요",
+                                    "소재지": location or "확인 필요",
+                                    "주요 생산시설 또는 핵심 역량": "확인 필요",
+                                    "비고": note if note and note.lower() not in {"nan", "none"} else "",
+                                    "출처 문서": str(filing.get("report_nm", "사업보고서")),
+                                    "출처일": str(filing.get("rcept_dt", "")),
+                                    "출처 URL": self.core.disclosure_url(receipt),
+                                    "출처 위치": f"{node.get('text', '주석')} · 표 {table_index}",
+                                }
+                            )
+                        if rows:
+                            unique: dict[str, dict[str, str]] = {}
+                            for row in rows:
+                                unique.setdefault(_clean(row["자회사명"]), row)
+                            return list(unique.values())[:50]
+        return []
+
+    @staticmethod
     def _price_history(stock_code: str) -> list[PricePoint]:
         if not stock_code:
             return []
@@ -262,6 +378,7 @@ class DartFactPackCollector:
                 )
 
         profile = self._company_profile(company["corp_code"])
+        subsidiaries = self._subsidiaries(company["corp_code"], years)
         entity = {
             "input_identifier": request.identifier,
             "company_name": company.get("corp_name", request.identifier),
@@ -291,6 +408,7 @@ class DartFactPackCollector:
             documents=list(document_index.values()),
             financial_facts=facts,
             corporate_profile=profile,
+            subsidiaries=subsidiaries,
             major_matters=major_matters,
             price_history=price_history,
         )

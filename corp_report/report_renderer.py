@@ -197,7 +197,7 @@ def _write_financial_sheet(ws, pack: FactPack) -> None:
     ws.page_setup.fitToWidth = 1
 
 
-def _write_summary_sheet(ws, pack: FactPack) -> None:
+def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     company = str(pack.entity.get("company_name", "기업"))
     ws.title = "본장"
     ws.merge_cells("C1:AL1")
@@ -283,33 +283,29 @@ def _write_summary_sheet(ws, pack: FactPack) -> None:
 
     if pack.entity.get("listing_status") == "listed" and pack.price_history:
         ws.merge_cells("T28:AH28")
-        ws["T28"] = "최근 1년 주가 추이 · 급변 구간은 왼쪽 이슈 대조 행 참조"
+        ws["T28"] = "최근 1년 주가 추이 · 상세 표와 급변 구간 설명은 ‘주가’ 시트 참조"
         ws["T28"].font = Font(name="맑은 고딕", size=9, bold=True, color="555555")
         ws["T28"].alignment = CENTER
-        for row, point in enumerate(pack.price_history, start=2):
-            ws.cell(row, 40, point.trading_date)
-            ws.cell(row, 41, point.close)
         chart = LineChart()
         chart.title = "최근 1년 주가 추이"
         chart.y_axis.title = "종가"
         chart.x_axis.title = "거래일"
         chart.height = 7.5
         chart.width = 13
-        data = Reference(ws, min_col=41, min_row=1, max_row=1 + len(pack.price_history))
-        categories = Reference(ws, min_col=40, min_row=2, max_row=1 + len(pack.price_history))
+        chart_source_ws = price_data_ws or ws
+        data = Reference(chart_source_ws, min_col=2, min_row=1, max_row=1 + len(pack.price_history))
+        categories = Reference(chart_source_ws, min_col=1, min_row=2, max_row=1 + len(pack.price_history))
         chart.add_data(data, titles_from_data=False)
         chart.set_categories(categories)
         chart.legend = None
         chart.dataLabels = DataLabelList()
         ws.add_chart(chart, "T29")
-        ws.column_dimensions["AN"].hidden = True
-        ws.column_dimensions["AO"].hidden = True
     elif pack.entity.get("listing_status") != "listed":
         ws["T29"] = "주가 추이: 비상장으로 시장가격 정보 없음"
 
     _style_section(ws, 45, 4, 38, "라. 자회사 등 현황")
     ws.merge_cells("E47:AH48")
-    ws["E47"] = "자회사 정보는 사업보고서의 타법인 출자·연결대상 종속기업 주석 추출 단계에서 보강됩니다. 현재: 확인 필요"
+    ws["E47"] = f"최신 사업보고서 주석에서 추출한 자회사 {len(pack.subsidiaries)}개를 ‘자회사 등’ 시트에 표시했습니다." if pack.subsidiaries else "자회사 정보는 최신 사업보고서 주석에서 추출을 시도했으나 표를 확인하지 못했습니다. 원문 주석 확인 필요"
     ws["E47"].alignment = LEFT_WRAP
 
     for column in range(1, 39):
@@ -322,19 +318,142 @@ def _write_summary_sheet(ws, pack: FactPack) -> None:
     ws.page_setup.fitToHeight = 2
 
 
+def _write_price_data_sheet(ws, pack: FactPack) -> None:
+    ws.title = "주가 data"
+    headers = ["거래일", "종가", "거래량", "출처 URL", "값 구분"]
+    _apply_table_header(ws, 1, headers)
+    for row, point in enumerate(pack.price_history, start=2):
+        ws.cell(row, 1, datetime.fromisoformat(point.trading_date).date())
+        ws.cell(row, 2, point.close)
+        ws.cell(row, 3, point.volume)
+        ws.cell(row, 4, point.source_url)
+        ws.cell(row, 5, "collected")
+        ws.cell(row, 1).number_format = "yyyy-mm-dd"
+        ws.cell(row, 2).number_format = '#,##0.00;[Red](#,##0.00);-'
+        ws.cell(row, 3).number_format = '#,##0;[Red](#,##0);-'
+        for col in range(1, 6):
+            ws.cell(row, col).border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            ws.cell(row, col).alignment = LEFT_WRAP if col == 4 else CENTER
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:E{max(ws.max_row, 2)}"
+    for col, width in enumerate([14, 14, 18, 72, 14], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def _write_price_sheet(ws, pack: FactPack) -> None:
+    ws.title = "주가"
+    ws["A1"] = "최근 1년 주가 분석"
+    ws["A1"].font = TITLE
+    ws["A2"] = "원천: 주가 data 시트의 Yahoo Finance 일별 종가. 표시 표는 원천 시트를 참조합니다."
+    ws["A2"].font = Font(name="맑은 고딕", size=9, color="555555")
+    ws.merge_cells("A2:F2")
+    if not pack.price_history:
+        ws.merge_cells("A4:F4")
+        ws["A4"] = "상장사 가격 데이터를 수집하지 못했습니다."
+        return
+
+    points = sorted(pack.price_history, key=lambda item: item.trading_date)
+    low = min(points, key=lambda item: item.close)
+    high = max(points, key=lambda item: item.close)
+    start, end = points[0], points[-1]
+    return_1y = (end.close / start.close - 1) if start.close else None
+    summary = [
+        ("관측 시작일", datetime.fromisoformat(start.trading_date).date()),
+        ("관측 종료일", datetime.fromisoformat(end.trading_date).date()),
+        ("시작 종가", start.close),
+        ("종료 종가", end.close),
+        ("1년 변동률", return_1y),
+        ("기간 최저 종가", f"{low.close:,.0f}원 ({low.trading_date})"),
+        ("기간 최고 종가", f"{high.close:,.0f}원 ({high.trading_date})"),
+        ("관측 거래일", len(points)),
+    ]
+    for row, (label, value) in enumerate(summary, start=4):
+        ws.cell(row, 1, label).font = HEADER
+        ws.cell(row, 1).fill = PatternFill("solid", fgColor=GREY)
+        ws.cell(row, 2, value).font = BODY
+        for col in (1, 2):
+            ws.cell(row, col).border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            ws.cell(row, col).alignment = CENTER
+    ws["B4"].number_format = ws["B5"].number_format = "yyyy-mm-dd"
+    ws["B6"].number_format = ws["B7"].number_format = '#,##0.00;[Red](#,##0.00);-'
+    ws["B8"].number_format = PERCENT_FORMAT
+
+    event_matters = [item for item in pack.major_matters if item.category == "주가 변동·이슈 대조"]
+    ws["H2"] = "급변 구간 및 이슈 대조"
+    ws["H2"].font = HEADER
+    for col, label in enumerate(["거래일", "변동 및 사실", "해석", "출처"], start=8):
+        cell = ws.cell(3, col, label)
+        cell.font = HEADER
+        cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+        cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+        cell.alignment = CENTER
+    for row, matter in enumerate(event_matters, start=4):
+        values = [matter.disclosure_date, matter.fact, matter.interpretation, matter.url]
+        for col, value in enumerate(values, start=8):
+            ws.cell(row, col, value)
+            ws.cell(row, col).alignment = LEFT_WRAP if col in {9, 10, 11} else CENTER
+            ws.cell(row, col).border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+    if not event_matters:
+        ws.merge_cells("H4:K4")
+        ws["H4"] = "수집된 이슈와 날짜가 가까운 급변 구간을 확인하지 못했습니다."
+
+    headers = ["거래일", "종가", "거래량", "1일 변동률", "5일 변동률", "20일 변동률", "이슈 대조"]
+    _apply_table_header(ws, 13, headers)
+    event_text = {item.disclosure_date: item.fact for item in event_matters}
+    for index, point in enumerate(points, start=0):
+        row = 14 + index
+        source_row = 2 + index
+        ws.cell(row, 1, f"='주가 data'!A{source_row}")
+        ws.cell(row, 2, f"='주가 data'!B{source_row}")
+        ws.cell(row, 3, f"='주가 data'!C{source_row}")
+        ws.cell(row, 4, '="N/A"' if index == 0 else f'=IF(OR(NOT(ISNUMBER(B{row})),NOT(ISNUMBER(B{row - 1})),B{row - 1}<=0),"N/A",B{row}/B{row - 1}-1)')
+        ws.cell(row, 5, '="N/A"' if index < 5 else f'=IF(OR(NOT(ISNUMBER(B{row})),NOT(ISNUMBER(B{row - 5})),B{row - 5}<=0),"N/A",B{row}/B{row - 5}-1)')
+        ws.cell(row, 6, '="N/A"' if index < 20 else f'=IF(OR(NOT(ISNUMBER(B{row})),NOT(ISNUMBER(B{row - 20})),B{row - 20}<=0),"N/A",B{row}/B{row - 20}-1)')
+        ws.cell(row, 7, event_text.get(point.trading_date, ""))
+        for col in range(1, 8):
+            cell = ws.cell(row, col)
+            cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
+            cell.alignment = LEFT_WRAP if col == 7 else CENTER
+        ws.cell(row, 1).number_format = "yyyy-mm-dd"
+        ws.cell(row, 2).number_format = '#,##0.00;[Red](#,##0.00);-'
+        ws.cell(row, 3).number_format = '#,##0;[Red](#,##0);-'
+        for col in (4, 5, 6):
+            ws.cell(row, col).number_format = PERCENT_FORMAT
+        if point.trading_date in event_text:
+            for col in range(1, 8):
+                ws.cell(row, col).fill = PatternFill("solid", fgColor="FFF2CC")
+
+    chart = LineChart()
+    chart.title = "최근 1년 일별 종가"
+    chart.y_axis.title = "종가"
+    chart.x_axis.title = "거래일"
+    chart.height = 9
+    chart.width = 16
+    chart.add_data(Reference(ws, min_col=2, min_row=13, max_row=13 + len(points)), titles_from_data=True)
+    chart.set_categories(Reference(ws, min_col=1, min_row=14, max_row=13 + len(points)))
+    chart.legend = None
+    ws.add_chart(chart, "H10")
+    ws.freeze_panes = "A14"
+    ws.auto_filter.ref = f"A13:G{13 + len(points)}"
+    for col, width in enumerate([14, 14, 18, 14, 14, 14, 58, 14, 42, 48, 55], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
 def _write_subsidiary_sheet(ws, pack: FactPack) -> None:
     ws.title = "자회사 등"
-    headers = ["사업군", "자회사명", "지분율", "사업영역", "소재지", "주요 생산시설 또는 핵심 역량", "비고", "출처 문서"]
+    headers = ["사업군", "자회사명", "지분율", "사업영역", "소재지", "주요 생산시설 또는 핵심 역량", "비고", "출처 문서", "출처일", "출처 위치", "출처 URL"]
     _apply_table_header(ws, 2, headers)
     if not pack.subsidiaries:
-        ws.merge_cells("A3:H3")
+        ws.merge_cells("A3:K3")
         ws["A3"] = "자동 추출 대상 공시가 확보되지 않았습니다. 사업보고서 주석 확인 필요"
         ws["A3"].alignment = LEFT_WRAP
     else:
-        for row, subsidiary in enumerate(pack.subsidiaries, start=3):
+        for row, subsidiary in enumerate(sorted(pack.subsidiaries, key=lambda item: (item.get("사업군", ""), item.get("자회사명", ""))), start=3):
             for col, header in enumerate(headers, start=1):
                 ws.cell(row, col, subsidiary.get(header, "확인 필요"))
-    for col, width in enumerate([18, 24, 10, 24, 18, 44, 24, 32], start=1):
+    ws.freeze_panes = "A3"
+    ws.auto_filter.ref = f"A2:K{max(ws.max_row, 3)}"
+    for col, width in enumerate([18, 24, 10, 24, 18, 44, 24, 32, 14, 34, 60], start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
@@ -362,11 +481,15 @@ def render_report(pack: FactPack, output_dir: Path) -> Path:
     summary = workbook.active
     financial = workbook.create_sheet()
     financial_data = workbook.create_sheet()
+    price = workbook.create_sheet()
+    price_data = workbook.create_sheet()
     subsidiaries = workbook.create_sheet()
     matters = workbook.create_sheet()
     _write_data_sheet(financial_data, pack)
     _write_financial_sheet(financial, pack)
-    _write_summary_sheet(summary, pack)
+    _write_price_data_sheet(price_data, pack)
+    _write_price_sheet(price, pack)
+    _write_summary_sheet(summary, pack, price_data)
     _write_subsidiary_sheet(subsidiaries, pack)
     _write_matters_sheet(matters, pack)
     workbook.calculation.fullCalcOnLoad = True

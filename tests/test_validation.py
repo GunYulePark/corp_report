@@ -49,6 +49,7 @@ class ValidationTests(unittest.TestCase):
                 _fact("매출액", 100), _fact("영업이익", 20), _fact("당기순이익", 10),
                 _fact("자산총계", 100), _fact("부채총계", 60), _fact("자본총계", 40),
             ],
+            price_history=[PricePoint("2026-01-02", 100.0, 1_000, "https://example.com/price")],
         )
 
     def test_growth_labels(self) -> None:
@@ -67,9 +68,11 @@ class ValidationTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             output = render_report(self._pack(), Path(temp_dir))
             workbook = openpyxl.load_workbook(output, data_only=False)
-            self.assertEqual(len(workbook.sheetnames), 5)
+            self.assertEqual(len(workbook.sheetnames), 7)
             self.assertTrue(workbook["재무"]["C6"].value.startswith("=IF(COUNTIFS"))
             self.assertTrue(workbook["본장"]["I17"].value.startswith("='재무'!"))
+            self.assertEqual(workbook["주가 data"]["A1"].value, "거래일")
+            self.assertEqual(workbook["주가"]["A13"].value, "거래일")
 
     def test_price_event_is_not_repeated_for_one_source_event(self) -> None:
         points = [
