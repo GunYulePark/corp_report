@@ -5,10 +5,11 @@ from tempfile import TemporaryDirectory
 
 import openpyxl
 
-from corp_report.models import FactPack, FinancialFact, SourceDocument
+from corp_report.models import FactPack, FinancialFact, MatterFact, PricePoint, SourceDocument
 from corp_report.collector import _optional_int
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
+from corp_report.web_research import price_event_matters
 
 
 def _fact(account: str, value: int) -> FinancialFact:
@@ -68,3 +69,13 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(len(workbook.sheetnames), 5)
             self.assertTrue(workbook["재무"]["C6"].value.startswith("=IF(COUNTIFS"))
             self.assertTrue(workbook["본장"]["I17"].value.startswith("='재무'!"))
+
+    def test_price_event_is_not_repeated_for_one_source_event(self) -> None:
+        points = [
+            PricePoint("2026-08-21", 100.0, None, "https://example.com/price"),
+            PricePoint("2026-08-24", 110.0, None, "https://example.com/price"),
+            PricePoint("2026-08-25", 121.0, None, "https://example.com/price"),
+        ]
+        matter = MatterFact("웹 이슈 조사", "계약", "해석", "verified", "event-1", "공식 보도자료", "2026-08-24", "https://example.com/event")
+        results = price_event_matters(points, [matter])
+        self.assertEqual(len([item for item in results if item.category == "주가 변동·이슈 대조"]), 1)

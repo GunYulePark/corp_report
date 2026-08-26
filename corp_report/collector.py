@@ -12,7 +12,8 @@ from uuid import uuid4
 
 import requests
 
-from .models import FactPack, FinancialFact, MatterFact, PricePoint, ReportRequest, SourceDocument, now_iso
+from .models import FactPack, FinancialFact, PricePoint, ReportRequest, SourceDocument, now_iso
+from .web_research import price_event_matters, research_issue
 
 
 DEFAULT_PIPELINE_PATH = Path(r"C:\Users\CKD\dart-fss\dart_app_4.py")
@@ -176,49 +177,6 @@ class DartFactPackCollector:
             "homepage": result.get("hm_url", ""),
         }
 
-    def _issue_matters(self, corp_code: str, issue_query: str, years: list[int]) -> list[MatterFact]:
-        if not years:
-            return []
-        start = date(min(years), 1, 1)
-        end = min(date(max(years) + 1, 12, 31), date.today())
-        try:
-            payload = self.core.call_open_dart_json(
-                "list.json",
-                self.api_key,
-                {"corp_code": corp_code, "bgn_de": start.strftime("%Y%m%d"), "end_de": end.strftime("%Y%m%d"), "page_count": "100", "sort": "date", "sort_mth": "desc"},
-            )
-        except Exception:
-            return []
-        terms = [_clean(part) for part in re.split(r"[,/;]", issue_query) if _clean(part)]
-        results: list[MatterFact] = []
-        for row in payload.get("list", []):
-            title = str(row.get("report_nm", ""))
-            normalized_title = _clean(title)
-            if terms and not any(term in normalized_title for term in terms):
-                continue
-            category = next((label for keyword, label in ISSUE_CATEGORY_MAP.items() if _clean(keyword) in normalized_title), "최근 공시")
-            interpretation = (
-                "공시 제목 기준의 1차 분류입니다. 세부 조건과 재무·사업상 영향은 원문 검토 필요"
-                if category == "최근 공시"
-                else f"{category} 관련 공시입니다. 거래 조건과 재무·사업상 영향은 원문 검토 필요"
-            )
-            receipt = str(row.get("rcept_no", ""))
-            results.append(
-                MatterFact(
-                    category=category if not terms else f"요청 이슈·{category}",
-                    fact=title,
-                    interpretation=interpretation,
-                    verification_status="needs_review",
-                    source_document_id=f"dart-{receipt}",
-                    source_title=title,
-                    disclosure_date=str(row.get("rcept_dt", "")),
-                    url=self.core.disclosure_url(receipt) if receipt else "",
-                )
-            )
-            if len(results) >= 12:
-                break
-        return results
-
     @staticmethod
     def _price_history(stock_code: str) -> list[PricePoint]:
         if not stock_code:
@@ -309,6 +267,11 @@ class DartFactPackCollector:
             "stock_code": company.get("stock_code", ""),
             "listing_status": "listed" if company.get("stock_code") else "unlisted",
         }
+        price_history = self._price_history(str(company.get("stock_code", ""))) if request.include_price_chart else []
+        research_matters = research_issue(str(company.get("corp_name", request.identifier)), request.issue_query)
+        # User-entered issue research is the primary source for this section;
+        # generic recent disclosures are not substituted when no query is given.
+        major_matters = research_matters + price_event_matters(price_history, research_matters)
         return FactPack(
             pack_id=str(uuid4()),
             generated_at=now_iso(),
@@ -317,6 +280,6 @@ class DartFactPackCollector:
             documents=list(document_index.values()),
             financial_facts=facts,
             corporate_profile=profile,
-            major_matters=self._issue_matters(company["corp_code"], request.issue_query, years),
-            price_history=self._price_history(str(company.get("stock_code", ""))) if request.include_price_chart else [],
+            major_matters=major_matters,
+            price_history=price_history,
         )

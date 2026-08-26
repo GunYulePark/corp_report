@@ -267,7 +267,7 @@ def _write_summary_sheet(ws, pack: FactPack) -> None:
             ws.cell(index, 5).alignment = LEFT_WRAP
     else:
         ws.merge_cells("E29:AH30")
-        ws["E29"] = "조회 기간 내 주요 공시를 찾지 못했습니다."
+        ws["E29"] = "입력한 이슈가 없습니다. 웹 이슈 질의를 입력하면 조사 결과와 근거 URL을 표시합니다."
         ws["E29"].alignment = LEFT_WRAP
 
     _style_section(ws, 36, 4, 38, "라. 자회사 등 현황")
@@ -335,7 +335,7 @@ def _write_matters_sheet(ws, pack: FactPack) -> None:
             ws.cell(row, col).border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
     if not pack.major_matters:
         ws.merge_cells("A3:G3")
-        ws["A3"] = "요청 이슈 공시가 없습니다. 이슈 검색어 또는 조회 기간을 확인하세요."
+        ws["A3"] = "입력한 이슈가 없습니다. 웹 이슈 질의를 입력하면 조사 결과와 근거 URL을 표시합니다."
     widths = [14, 38, 48, 14, 34, 14, 55]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
