@@ -15,6 +15,8 @@ def validate_fact_pack(pack: FactPack) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     required = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"]
     primary_basis = pack.reporting_policy["primary_fs_basis"]
+    if not pack.financial_facts:
+        results.append({"severity": "warning", "rule": "financial_facts_present", "message": "재무 수집값이 없습니다. 원천 공시와 수집 기준을 확인해야 합니다."})
     for fact in pack.financial_facts:
         if fact.fs_div != primary_basis:
             results.append({"severity": "error", "rule": "basis_consistency", "fact_id": fact.fact_id, "message": "선택한 재무제표 기준과 다릅니다."})
@@ -55,4 +57,3 @@ def growth_display(previous: float | None, current: float | None, profit_metric:
     if previous <= 0 or current == 0:
         return "N.M."
     return current / previous - 1
-

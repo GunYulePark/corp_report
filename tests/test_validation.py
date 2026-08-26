@@ -4,9 +4,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import openpyxl
+import pandas as pd
 
 from corp_report.models import FactPack, FinancialFact, MatterFact, PricePoint, SourceDocument
-from corp_report.collector import _optional_int, standard_account
+from corp_report.collector import DartFactPackCollector, _optional_int, standard_account
 from corp_report.gemini_research import _to_matters
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
@@ -68,6 +69,16 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(standard_account("매출총이익", "ifrs-full_GrossProfit"), "매출총이익")
         self.assertEqual(standard_account("제품매출", "dart_RevenueFromSaleOfGoodsProduct"), "제품매출")
         self.assertEqual(standard_account("매출액", "ifrs-full_Revenue"), "매출액")
+
+    def test_audit_html_match_accepts_prefixed_total_revenue_only(self) -> None:
+        frame = pd.DataFrame([
+            {"재무항목": "매출채권", "당기금액": 100, "matched_exact": False, "테이블번호": 1, "행번호": 1},
+            {"재무항목": "I. 매출", "당기금액": 500, "matched_exact": False, "테이블번호": 2, "행번호": 3},
+            {"재무항목": "III. 매출총이익", "당기금액": 200, "matched_exact": False, "테이블번호": 2, "행번호": 5},
+        ])
+        matches = DartFactPackCollector._audit_matches(frame, "매출액")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["당기금액"], 500)
 
     def test_balance_sheet_tie_out(self) -> None:
         results = validate_fact_pack(self._pack())

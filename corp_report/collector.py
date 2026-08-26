@@ -30,6 +30,26 @@ ISSUE_CATEGORY_MAP = {
     "인허가": "인허가", "임상": "임상·인허가",
 }
 
+# OpenDART's financial-statement API does not cover every audit-report-only
+# filer.  These are the standard items retrieved from the existing pipeline's
+# audit-report HTML parser only when that API produces no rows.
+AUDIT_ACCOUNT_SPECS = (
+    ("매출액", "매출"), ("영업이익", "영업이익"), ("당기순이익", "당기순이익"),
+    ("자산총계", "자산총계"), ("유동자산", "유동자산"), ("부채총계", "부채총계"),
+    ("유동부채", "유동부채"), ("자본총계", "자본총계"),
+    ("현금및현금성자산", "현금및현금성자산"), ("이자비용", "이자비용"),
+)
+
+AUDIT_ACCOUNT_LABELS = {
+    "매출액": {"매출", "매출액", "영업수익", "수익매출액"},
+    "영업이익": {"영업이익", "영업손실"},
+    "당기순이익": {"당기순이익", "당기순손실", "당기순이익손실"},
+    "자산총계": {"자산총계"}, "유동자산": {"유동자산"},
+    "부채총계": {"부채총계"}, "유동부채": {"유동부채"},
+    "자본총계": {"자본총계"}, "현금및현금성자산": {"현금및현금성자산"},
+    "이자비용": {"이자비용", "금융비용", "이자비용및금융비용"},
+}
+
 
 def load_pipeline(path: str | None = None) -> ModuleType:
     pipeline_path = Path(path or os.getenv("DART_PIPELINE_PATH", DEFAULT_PIPELINE_PATH))
@@ -72,6 +92,13 @@ def _dart_number(value: object) -> float | None:
     """Parse OpenDART numeric strings such as '1,234' or '73.7'."""
     text = re.sub(r"[^0-9.\-]", "", str(value or ""))
     return _optional_float(text)
+
+
+def _audit_label(value: object) -> str:
+    """Normalize headings such as 'I. 매출' and '자 산 총 계'."""
+    text = re.sub(r"\s+", "", str(value or "")).lower()
+    text = re.sub(r"^[ivxlcdm]+[.)]", "", text, flags=re.IGNORECASE)
+    return re.sub(r"[^0-9a-z가-힣]", "", text)
 
 
 def standard_account(account_name: object, account_id: object) -> str:
@@ -174,6 +201,107 @@ class DartFactPackCollector:
                     )
                 )
         return documents
+
+    @staticmethod
+    def _audit_matches(frame: pd.DataFrame, standard_account: str) -> list[dict[str, Any]]:
+        """Choose only a total-line match from audit statement HTML results."""
+        if frame.empty:
+            return []
+        labels = AUDIT_ACCOUNT_LABELS[standard_account]
+        candidates = []
+        for record in frame.to_dict("records"):
+            label = _audit_label(record.get("재무항목", ""))
+            if label not in labels or _optional_int(record.get("당기금액")) is None:
+                continue
+            candidates.append(record)
+        candidates.sort(key=lambda item: (not bool(item.get("matched_exact")), int(item.get("테이블번호", 0)), int(item.get("행번호", 0))))
+        return candidates[:1]
+
+    def _audit_fallback_facts(
+        self,
+        company: dict[str, str],
+        year: int,
+        fs_div: str,
+        documents: list[SourceDocument],
+        period_label: str,
+        period_start: str,
+        period_end: str,
+        is_cumulative: bool,
+    ) -> list[FinancialFact]:
+        """Read core facts from a standalone/connected audit report once API data is absent."""
+        try:
+            filings = self.core.search_filings(self.api_key, company["corp_code"], year, "annual")
+        except Exception:
+            return []
+        if filings.empty:
+            return []
+        preferred_roles = ["연결감사보고서", "사업보고서"] if fs_div == "CFS" else ["감사보고서", "사업보고서"]
+        ordered: list[dict[str, Any]] = []
+        for role in preferred_roles:
+            ordered.extend(filings[filings["report_role"] == role].to_dict("records"))
+        if not ordered:
+            ordered = filings.to_dict("records")
+        document_ids = {document.rcept_no: document.document_id for document in documents}
+        for filing in ordered:
+            receipt = str(filing.get("rcept_no", ""))
+            try:
+                nodes = self.core.parse_dart_tree_nodes(self.core.fetch_report_main_html(receipt))
+                node = self.core.select_financial_statement_node(nodes)
+                if node is None:
+                    continue
+                viewer_html = self.core.fetch_viewer_html(node)
+            except Exception:
+                continue
+            facts: list[FinancialFact] = []
+            for index, (standard, query) in enumerate(AUDIT_ACCOUNT_SPECS, start=1):
+                try:
+                    matches = self.core.search_account_in_viewer_html(
+                        viewer_html=viewer_html,
+                        account_query=query,
+                        exact=False,
+                        company_name=str(company.get("corp_name", "")),
+                        year=year,
+                        report_type="annual",
+                        fs_div=fs_div,
+                        rcept_no=receipt,
+                    )
+                except Exception:
+                    continue
+                for match in self._audit_matches(matches, standard):
+                    amount = _optional_int(match.get("당기금액"))
+                    if amount is None:
+                        continue
+                    statement = "PL" if standard in {"매출액", "영업이익", "당기순이익", "이자비용"} else "BS"
+                    facts.append(
+                        FinancialFact(
+                            fact_id=f"audit-{year}-annual-{index}",
+                            company_name=str(company.get("corp_name", "")),
+                            stock_code=str(company.get("stock_code", "")),
+                            fiscal_year=year,
+                            period_label=period_label,
+                            report_type="annual",
+                            period_start=period_start,
+                            period_end=period_end,
+                            is_cumulative=is_cumulative,
+                            fs_div=fs_div,
+                            statement=statement,
+                            stock_or_flow="flow" if statement == "PL" else "stock",
+                            standard_account=standard,
+                            source_account=str(match.get("재무항목", standard)),
+                            account_id="audit_report_html",
+                            value_krw=amount,
+                            currency="KRW",
+                            source_document_id=document_ids.get(receipt, f"dart-{receipt}"),
+                            source_location=f"감사보고서 재무제표 · 표 {match.get('테이블번호', '')} · 행 {match.get('행번호', '')}",
+                            value_type="collected",
+                        )
+                    )
+            # Require the six core totals before accepting a parsed statement;
+            # a partial HTML table must not masquerade as a complete audit source.
+            core = {fact.standard_account for fact in facts}
+            if {"매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"}.issubset(core):
+                return facts
+        return []
 
     @staticmethod
     def _document_for(documents: list[SourceDocument], report_type: str, year: int) -> SourceDocument | None:
@@ -493,11 +621,14 @@ class DartFactPackCollector:
         document_index = {document.document_id: document for document in documents}
         facts: list[FinancialFact] = []
         for year, report_type in periods:
+            label, start, end, cumulative = _period(report_type, year)
             try:
                 raw = self.core.fetch_financial_statement_all(self.api_key, company["corp_code"], year, report_type, request.fs_div)
             except Exception:
+                raw = pd.DataFrame()
+            if raw.empty and report_type == "annual":
+                facts.extend(self._audit_fallback_facts(company, year, request.fs_div, documents, label, start, end, cumulative))
                 continue
-            label, start, end, cumulative = _period(report_type, year)
             document = self._document_for(documents, report_type, year)
             source_id = document.document_id if document else ""
             for index, (_, row) in enumerate(raw.iterrows(), start=1):
