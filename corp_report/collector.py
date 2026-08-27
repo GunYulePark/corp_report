@@ -1046,6 +1046,12 @@ class DartFactPackCollector:
         issue_sources = [*company_context_matters(company_name), *research_issue(company_name, request.issue_query)]
         gemini_matters = analyze_issue(company_name, request.issue_query, issue_sources, self.gemini_api_key)
         issue_matters = gemini_matters or issue_sources
+        if any(item.category.startswith("Gemini 검색 기반·") for item in gemini_matters):
+            issue_provider = "Gemini Google Search grounding"
+        elif gemini_matters:
+            issue_provider = "Gemini source-pack synthesis"
+        else:
+            issue_provider = "source_only"
         # Keep default business/production highlights alongside a user issue;
         # the latter must not erase source-linked corporate context.
         major_matters = [*corporate_highlights, *issue_matters]
@@ -1059,7 +1065,7 @@ class DartFactPackCollector:
                 "display_unit": "억원",
                 "currency": "KRW",
                 "issue_query": request.issue_query,
-                "issue_analysis_provider": "Gemini" if gemini_matters else "source_only",
+                "issue_analysis_provider": issue_provider,
             },
             documents=list(document_index.values()),
             financial_facts=facts,

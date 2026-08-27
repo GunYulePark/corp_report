@@ -1,4 +1,5 @@
 import unittest
+import json
 from math import nan
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,7 +9,7 @@ import pandas as pd
 
 from corp_report.models import FactPack, FinancialFact, MatterFact, PricePoint, SourceDocument
 from corp_report.collector import DartFactPackCollector, _optional_int, standard_account
-from corp_report.gemini_research import _to_matters
+from corp_report.gemini_research import _grounded_to_matters, _to_matters
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
 from corp_report.web_research import company_context_matters, company_context_profile, price_event_matters
@@ -131,6 +132,18 @@ class ValidationTests(unittest.TestCase):
             self.assertIsNone(workbook["주가"]._charts[0].title)
             self.assertTrue(workbook["주가"]._charts[0].x_axis.delete)
 
+    def test_renderer_prioritizes_user_issue_on_summary(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            pack = self._pack()
+            pack.reporting_policy["issue_query"] = "계약 종료 영향"
+            pack.major_matters = [
+                MatterFact("사업 포트폴리오", "일반 사업", "일반 해석", "verified", "company", "사업보고서", "2026-01-01", "https://example.com/company"),
+                MatterFact("Gemini 검색 기반·계약 종료", "계약 종료 관련 사실", "매출 영향 검토", "needs_review", "issue", "검색 근거", "2026-01-02", "https://example.com/issue"),
+            ]
+            output = render_report(pack, Path(temp_dir))
+            workbook = openpyxl.load_workbook(output, data_only=False)
+            self.assertEqual(workbook["본장"]["E52"].value, "◯ 계약 종료")
+
     def test_price_event_is_not_repeated_for_one_source_event(self) -> None:
         points = [
             PricePoint("2026-08-21", 100.0, None, "https://example.com/price"),
@@ -150,3 +163,19 @@ class ValidationTests(unittest.TestCase):
         results = _to_matters(payload, [source])
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].source_document_id, "official-1")
+
+    def test_grounded_gemini_result_requires_returned_citation_url(self) -> None:
+        url = "https://example.com/article"
+        payload = {
+            "candidates": [{
+                "content": {"parts": [{"text": json.dumps({"items": [
+                    {"category": "계약", "fact": "근거 있는 사실", "interpretation": "근거 있는 해석", "source_urls": [url]},
+                    {"category": "계약", "fact": "근거 없는 사실", "interpretation": "근거 없는 해석", "source_urls": ["https://invalid.example"]},
+                ]})}]},
+                "groundingMetadata": {"groundingChunks": [{"web": {"uri": url, "title": "공식 보도자료"}}]},
+            }],
+        }
+        results = _grounded_to_matters(payload)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].url, url)
+        self.assertEqual(results[0].verification_status, "needs_review")

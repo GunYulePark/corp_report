@@ -42,6 +42,30 @@ ISSUE_SCHEMA: dict[str, Any] = {
     "required": ["items"],
 }
 
+# Google Search grounding returns the source URLs in groundingMetadata rather
+# than in the fixed source pack.  Keep the model output compact and validate
+# every URL against that metadata before it can become a report fact.
+GROUNDED_ISSUE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "fact": {"type": "string"},
+                    "interpretation": {"type": "string"},
+                    "source_urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3},
+                },
+                "required": ["category", "fact", "interpretation", "source_urls"],
+            },
+        },
+    },
+    "required": ["items"],
+}
+
 CORPORATE_CITED_TEXT: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -118,6 +142,125 @@ def _response_json(response: requests.Response) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _response_payload(response: requests.Response) -> dict[str, Any] | None:
+    """Read a raw Gemini response while retaining grounding metadata."""
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _grounding_sources(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Normalize Gemini Google Search citations from the documented metadata."""
+    try:
+        metadata = payload["candidates"][0].get("groundingMetadata", {})
+    except (KeyError, IndexError, TypeError):
+        return {}
+    sources: dict[str, dict[str, str]] = {}
+    for chunk in metadata.get("groundingChunks", []):
+        if not isinstance(chunk, dict):
+            continue
+        web = chunk.get("web", {})
+        if not isinstance(web, dict):
+            continue
+        url = str(web.get("uri", "")).strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        sources[url.rstrip("/")] = {
+            "url": url,
+            "title": str(web.get("title", "웹 검색 근거")),
+            "date": str(web.get("publishedDate", "")),
+        }
+    return sources
+
+
+def _grounded_to_matters(payload: dict[str, Any]) -> list[MatterFact]:
+    """Convert a grounded JSON response to reviewable source-linked facts only."""
+    try:
+        raw_text = payload["candidates"][0]["content"]["parts"][0]["text"]
+        structured = json.loads(raw_text)
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(structured, dict):
+        return []
+    source_index = _grounding_sources(payload)
+    if not source_index:
+        return []
+    results: list[MatterFact] = []
+    for index, item in enumerate(structured.get("items", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        fact = str(item.get("fact", "")).strip()
+        interpretation = str(item.get("interpretation", "")).strip()
+        category = str(item.get("category", "이슈 분석")).strip()
+        if not fact or not interpretation:
+            continue
+        citation = next(
+            (source_index[url.rstrip("/")] for url in item.get("source_urls", []) if isinstance(url, str) and url.rstrip("/") in source_index),
+            None,
+        )
+        if citation is None:
+            continue
+        # Search grounding gives a citable web lead, not a filing-level audit
+        # opinion. Keep it reviewable until the linked original is confirmed.
+        results.append(
+            MatterFact(
+                category=f"Gemini 검색 기반·{category}",
+                fact=fact,
+                interpretation=interpretation,
+                verification_status="needs_review",
+                source_document_id=f"gemini-grounded-{index}",
+                source_title=citation["title"],
+                disclosure_date=citation["date"],
+                url=citation["url"],
+            )
+        )
+    return results
+
+
+def _grounded_issue_prompt(company_name: str, issue_query: str) -> str:
+    return f"""당신은 한국 상장사 기업분석 보고서의 이슈 리서치 애널리스트다.
+회사: {company_name}
+사용자 요청: {issue_query}
+
+Google Search로 요청과 직접 관련된 최근 기사, 회사 IR·보도자료, DART 공시를 조사하라.
+계약 종료·판매권 변동·매출·영업이익의 관계는 수치와 기간이 인용 자료에 명시된 경우에만 서술하라.
+확정 매출, 계약 규모, 예상 영향, 기사 해석을 혼동하지 말고 비교 기준·한계를 해석에 포함하라.
+반환값은 JSON만 사용한다. 각 item의 source_urls에는 Google Search grounding 결과에 실제 포함된 원문 URL만 1~3개 넣어라.
+출처 URL이 없는 추정·의견은 item에 포함하지 말라.
+"""
+
+
+def _analyze_grounded_issue(company_name: str, issue_query: str, api_key: str) -> list[MatterFact]:
+    """Use Gemini's managed Google Search and retain only returned citations."""
+    if not api_key.strip() or not issue_query.strip():
+        return []
+    model = os.getenv("GEMINI_GROUNDED_MODEL", os.getenv("GEMINI_MODEL", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": _grounded_issue_prompt(company_name, issue_query)}]}],
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": GROUNDED_ISSUE_SCHEMA,
+            "temperature": 0.1,
+        },
+    }
+    try:
+        response = requests.post(
+            API_URL.format(model=model),
+            params={"key": api_key},
+            headers=USER_AGENT,
+            json=body,
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return []
+    payload = _response_payload(response)
+    return _grounded_to_matters(payload) if payload else []
+
+
 def _to_matters(payload: dict[str, Any], sources: list[MatterFact]) -> list[MatterFact]:
     source_index = {item.source_document_id: item for item in sources}
     results: list[MatterFact] = []
@@ -154,9 +297,14 @@ def _to_matters(payload: dict[str, Any], sources: list[MatterFact]) -> list[Matt
 
 
 def analyze_issue(company_name: str, issue_query: str, sources: list[MatterFact], api_key: str = "") -> list[MatterFact]:
-    """Return structured Gemini analysis or an empty list on any API failure."""
+    """Prefer Gemini Google Search grounding; preserve source-pack fallback."""
     key = api_key.strip() or os.getenv("GEMINI_API_KEY", "").strip()
-    if not key or not issue_query.strip() or not sources:
+    if not key or not issue_query.strip():
+        return []
+    grounded = _analyze_grounded_issue(company_name, issue_query, key)
+    if grounded:
+        return grounded
+    if not sources:
         return []
     model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
     request_body = {

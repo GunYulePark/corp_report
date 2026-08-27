@@ -561,11 +561,17 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     ws["E50"] = f"검토 요청: {issue_query}" if issue_query else "검토 요청: N/A"
     ws["E50"].font = Font(name="맑은 고딕", size=9, italic=True, color="555555")
     ws["E50"].alignment = LEFT_WRAP
-    issue_matters = [matter for matter in pack.major_matters if not matter.category.startswith("주가 변동")][:3]
+    non_price_matters = [matter for matter in pack.major_matters if not matter.category.startswith("주가 변동")]
+    requested_issue_matters = [
+        matter for matter in non_price_matters
+        if matter.category.startswith(("Gemini 분석·", "Gemini 검색 기반·", "웹 이슈 조사·"))
+    ]
+    # A user request should never be pushed below generic company-profile text.
+    issue_matters = (requested_issue_matters or non_price_matters)[:3]
     if issue_matters:
         for index, matter in enumerate(issue_matters):
             row = 52 + index * 2
-            category = matter.category.removeprefix("Gemini 분석·").removeprefix("웹 이슈 조사·")
+            category = matter.category.removeprefix("Gemini 분석·").removeprefix("Gemini 검색 기반·").removeprefix("웹 이슈 조사·")
             source_title = _source_text(matter.source_title, matter.disclosure_date)
             labeled_row(row, f"◯ {category}", _short_text(matter.fact, 150), source_title, matter.url, height=34)
             labeled_row(row + 1, "시사점", _short_text(matter.interpretation, 150), source_title, matter.url, height=34)
