@@ -396,12 +396,21 @@ def _write_financial_sheet(ws, pack: FactPack) -> None:
 def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     company = str(pack.entity.get("company_name", "기업"))
     ws.title = "본장"
-    ws.merge_cells("C1:AL1")
+    ws.merge_cells("C1:AB1")
     ws["C1"] = f"◐ {company}"
     ws["C1"].font = TITLE
     ws["C3"] = f"< {datetime.now().strftime('%Y. %m. %d')} >"
     ws["C3"].alignment = CENTER
-    _style_section(ws, 5, 4, 38, "가. 회사 및 사업개요")
+    _style_section(ws, 5, 4, 28, "가. 회사 및 사업개요")
+    # Sources remain on the same row, but outside the printable executive report.
+    # They are intentionally placed far right for on-screen review only.
+    for start_col, end_col, label in ((39, 42, "출처 · 화면 검토용"), (43, 48, "원문 링크 · 화면 검토용")):
+        ws.merge_cells(start_row=5, start_column=start_col, end_row=5, end_column=end_col)
+        cell = ws.cell(5, start_col, label)
+        cell.font = Font(name="맑은 고딕", size=8, bold=True, color="555555")
+        cell.fill = PatternFill("solid", fgColor="E7E6E6")
+        cell.alignment = CENTER
+        cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
     profile = pack.corporate_profile
     corporate_source, corporate_url = _corporate_source(pack)
     profile_fields = [
@@ -414,7 +423,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         ("시가총액", _display_market_cap(pack.entity.get("market_cap_krw"), pack.entity.get("market_price_date"))),
     ]
 
-    def apply_source(row: int, source_title: str, source_url: str, source_start: int = 29, source_end: int = 32, link_start: int = 33, link_end: int = 38) -> None:
+    def apply_source(row: int, source_title: str, source_url: str, source_start: int = 39, source_end: int = 42, link_start: int = 43, link_end: int = 48) -> None:
         ws.merge_cells(start_row=row, start_column=source_start, end_row=row, end_column=source_end)
         ws.merge_cells(start_row=row, start_column=link_start, end_row=row, end_column=link_end)
         source_cell = ws.cell(row, source_start, source_title or "출처 확인 필요")
@@ -428,8 +437,8 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         for cell in (source_cell, link_cell):
             cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
 
-    def profile_field(row: int, position: tuple[int, int, int, int, int, int], label: str, value: object) -> None:
-        label_start, label_end, value_start, value_end, source_start, link_start = position
+    def profile_field(row: int, position: tuple[int, int, int, int], label: str, value: object) -> None:
+        label_start, label_end, value_start, value_end = position
         ws.merge_cells(start_row=row, start_column=label_start, end_row=row, end_column=label_end)
         ws.merge_cells(start_row=row, start_column=value_start, end_row=row, end_column=value_end)
         label_cell = ws.cell(row, label_start, label)
@@ -440,9 +449,9 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         for cell in (label_cell, value_cell):
             cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
             cell.alignment = LEFT_WRAP if cell is value_cell else CENTER
-        apply_source(row, corporate_source, corporate_url, source_start, source_start + 3, link_start, link_start + 1)
+        apply_source(row, corporate_source, corporate_url)
 
-    profile_positions = ((5, 7, 8, 14, 15, 19), (21, 23, 24, 30, 31, 35))
+    profile_positions = ((5, 7, 8, 15), (16, 18, 19, 28))
     for index, (label, value) in enumerate(profile_fields):
         row = 7 + index // 2
         profile_field(row, profile_positions[index % 2], label, value)
@@ -500,7 +509,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         apply_source(row, source_label, source_url)
         ws.row_dimensions[row].height = 22
 
-    _style_section(ws, 28, 4, 38, "나. 재무 현황")
+    _style_section(ws, 28, 4, 28, "나. 재무 현황")
     periods = _periods(pack)[-5:]
     ws.merge_cells("E30:H30")
     ws["E30"] = "지표"
@@ -515,13 +524,6 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         cell.font = HEADER
         cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
         cell.alignment = CENTER
-    for start_col, end_col, label in ((29, 32, "출처"), (33, 38, "링크")):
-        ws.merge_cells(start_row=30, start_column=start_col, end_row=30, end_column=end_col)
-        cell = ws.cell(30, start_col, label)
-        cell.font = HEADER
-        cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
-        cell.alignment = CENTER
-        cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
     summary_rows = [
         (31, "매출액", 6, False), (32, "매출액증감률", 27, True),
         (33, "영업이익", 8, False), (34, "영업이익증감률", 28, True),
@@ -553,7 +555,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     labeled_row(46, "수익성 해석", profitability_note, financial_note_source, financial_note_url)
     labeled_row(47, "안정성 해석", stability_note, financial_note_source, financial_note_url)
 
-    _style_section(ws, 49, 4, 38, "다. 주요 사항")
+    _style_section(ws, 49, 4, 28, "다. 주요 사항")
     ws.merge_cells("E50:S50")
     issue_query = str(pack.reporting_policy.get("issue_query", "")).strip()
     ws["E50"] = f"검토 요청: {issue_query}" if issue_query else "검토 요청: N/A"
@@ -571,9 +573,9 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         labeled_row(52, "◯ 주요 사항", "입력 이슈 없음. 웹 이슈 질의 입력 시 근거 기반 요약 표시", corporate_source, corporate_url)
 
     subsidiary_section_row = 60
-    _style_section(ws, subsidiary_section_row, 4, 38, "라. 자회사 등 현황")
+    _style_section(ws, subsidiary_section_row, 4, 28, "라. 자회사 등 현황")
     subsidiary_header_row = subsidiary_section_row + 2
-    subsidiary_headers = [(5, 8, "사업군"), (9, 14, "자회사명"), (15, 18, "지분율"), (19, 28, "사업영역·비고"), (29, 32, "출처"), (33, 38, "링크")]
+    subsidiary_headers = [(5, 8, "사업군"), (9, 14, "자회사명"), (15, 18, "지분율"), (19, 28, "사업영역·비고")]
     for start_col, end_col, label in subsidiary_headers:
         ws.merge_cells(start_row=subsidiary_header_row, start_column=start_col, end_row=subsidiary_header_row, end_column=end_col)
         cell = ws.cell(subsidiary_header_row, start_col, label)
@@ -590,7 +592,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
                 subsidiary.get("지분율", "확인 필요"),
                 " · ".join(value for value in [subsidiary.get("사업영역", ""), subsidiary.get("비고", "")] if value) or "확인 필요",
             ]
-            for (start_col, end_col, _), value in zip(subsidiary_headers[:4], values):
+            for (start_col, end_col, _), value in zip(subsidiary_headers, values):
                 ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
                 cell = ws.cell(row, start_col, _report_tone(value))
                 cell.font = Font(name="맑은 고딕", size=9)
@@ -607,7 +609,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     price_section_row = subsidiary_last_row + 2
     price_end_row = price_section_row
     if pack.entity.get("listing_status") == "listed" and pack.price_history:
-        _style_section(ws, price_section_row, 4, 38, "마. 주가 추이")
+        _style_section(ws, price_section_row, 4, 28, "마. 주가 추이")
         points = sorted(pack.price_history, key=lambda item: item.trading_date)
         start, end = points[0], points[-1]
         return_1y = end.close / start.close - 1 if start.close else None
@@ -635,9 +637,11 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         ws.add_chart(chart, f"E{price_section_row + 4}")
         price_end_row = price_section_row + 25
 
-    for column in range(1, 39):
+    for column in range(1, 49):
         ws.column_dimensions[get_column_letter(column)].width = 3.2
     ws.column_dimensions["C"].width = 12
+    for column in range(39, 49):
+        ws.column_dimensions[get_column_letter(column)].width = 4.5
     ws.sheet_view.showGridLines = False
     ws.sheet_view.zoomScale = 90
     ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=48))
@@ -651,7 +655,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     ws.page_margins.top = 0.28
     ws.page_margins.bottom = 0.28
     ws.print_options.horizontalCentered = True
-    ws.print_area = f"D1:AL{price_end_row}"
+    ws.print_area = f"D1:AB{price_end_row}"
 
 
 def _write_price_data_sheet(ws, pack: FactPack) -> None:
