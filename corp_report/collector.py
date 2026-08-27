@@ -111,6 +111,10 @@ def _audit_label(value: object) -> str:
 def standard_account(account_name: object, account_id: object) -> str:
     name = _clean(account_name)
     concept = _clean(account_id)
+    # Equity-and-liabilities is a balance-sheet check total, not a liability
+    # (or equity) line.  Keep it out of the report's selected financial facts.
+    if any(label in name for label in ("자본과부채총계", "부채와자본총계", "자본및부채총계")) or "equityandliabilities" in concept:
+        return str(account_name or "").strip() or "미분류"
     # Specific revenue-cost accounts must be checked before the broad "매출"
     # condition; otherwise 매출원가 is incorrectly displayed as 매출액.
     if "매출원가" in name or "costofsales" in concept:
@@ -132,7 +136,7 @@ def standard_account(account_name: object, account_id: object) -> str:
         return "매출액"
     if "영업이익" in name or "operatingincome" in concept or "operatingprofit" in concept:
         return "영업이익"
-    if "당기순이익" in name or "profitloss" == concept or "netincome" in concept:
+    if any(label in name for label in ("당기순이익", "분기순이익", "반기순이익", "당기순손익")) or "profitloss" in concept or "netincome" in concept:
         return "당기순이익"
     if "유동자산" in name or "currentassets" in concept:
         return "유동자산"
@@ -343,7 +347,7 @@ class DartFactPackCollector:
             "homepage": result.get("hm_url", ""),
         }
 
-    def _governance_snapshot(self, corp_code: str, year: int) -> dict[str, Any]:
+    def _governance_snapshot(self, corp_code: str, year: int, ceo_name: str = "") -> dict[str, Any]:
         """Collect employee, major-holder and issued-share facts from OpenDART."""
         params = {"corp_code": corp_code, "bsns_year": str(year), "reprt_code": "11011"}
         result: dict[str, Any] = {"source": "OpenDART 사업보고서 정기공시 API", "fiscal_year": year}
@@ -380,6 +384,15 @@ class DartFactPackCollector:
                 result["issued_shares"] = int(_dart_number(ordinary.get("istc_totqy")) or 0) or None
         except Exception:
             pass
+        try:
+            executives = self.core.call_open_dart_json("exctvSttus.json", self.api_key, params).get("list", [])
+            matching = [row for row in executives if ceo_name and _clean(row.get("nm")) == _clean(ceo_name)]
+            representative = next((row for row in matching if "대표" in str(row.get("ofcps", ""))), matching[0] if matching else None)
+            career = re.sub(r"\s+", " ", str((representative or {}).get("main_career", ""))).strip()
+            if career and career.lower() not in {"nan", "none", "-"}:
+                result["ceo_bio"] = career[:500]
+        except Exception:
+            pass
         return result
 
     @staticmethod
@@ -403,6 +416,8 @@ class DartFactPackCollector:
         text = _clean(f"{business} {location}")
         if any(word in text for word in ("연구", "임상", "바이오", "신약")):
             return "연구개발·바이오"
+        if any(word in text for word in ("진단", "분석", "검사")):
+            return "진단·분석"
         if any(word in text for word in ("제조", "생산", "공장")):
             return "제조"
         if any(word in text for word in ("유통", "판매", "도매")):
@@ -500,7 +515,7 @@ class DartFactPackCollector:
                         if any(isinstance(column, tuple) and len(column) > 2 for column in table.columns):
                             continue
                         columns = self._flat_columns(table)
-                        name_index = self._column_index(columns, ("회사명", "법인명", "종속기업", "피투자회사"))
+                        name_index = self._column_index(columns, ("회사명", "법인명", "종속기업", "피투자회사", "상호"))
                         if name_index is None:
                             continue
                         stake_index = self._column_index(columns, ("지분율", "소유지분", "지분"))
@@ -528,6 +543,39 @@ class DartFactPackCollector:
                                     "매출액(공시 표기)": field(revenue_index),
                                     "당기순이익(공시 표기)": field(profit_index),
                                 }
+                            continue
+                        # A detailed connected-subsidiary table in a business
+                        # report often gives the entity, address and main
+                        # business but no ownership percentage.  It is still a
+                        # valid group-coverage source; keep its missing stake
+                        # explicit instead of dropping every subsidiary.
+                        if stake_index is None and business_index is not None and location_index is not None and "연결대상종속회사" in _clean(node.get("text", "")):
+                            for values in table.itertuples(index=False, name=None):
+                                name = str(values[name_index] if name_index < len(values) else "").strip()
+                                compact_name = _clean(name)
+                                if not name or compact_name in {"상호", "회사명", "법인명", "합계", "nan", "none"} or len(name) < 2 or len(name) > 120:
+                                    continue
+                                business = str(values[business_index] if business_index < len(values) else "확인 필요").strip()
+                                location = str(values[location_index] if location_index < len(values) else "확인 필요").strip()
+                                assets = str(values[asset_index] if asset_index is not None and asset_index < len(values) else "").strip()
+                                establishment_index = self._column_index(columns, ("설립일",))
+                                establishment = str(values[establishment_index] if establishment_index is not None and establishment_index < len(values) else "").strip()
+                                ownership_rows.append(
+                                    {
+                                        "사업군": self._subsidiary_group(business, location),
+                                        "자회사명": name,
+                                        "지분율": "확인 필요",
+                                        "사업영역": business or "확인 필요",
+                                        "소재지": location or "확인 필요",
+                                        "자산(공시 표기)": f"{assets}백만원" if assets and assets.lower() not in {"nan", "none"} else "",
+                                        "주요 생산시설 또는 핵심 역량": "연결대상 종속회사 상세표상 주요사업",
+                                        "비고": " · ".join(value for value in ["연결대상 종속회사 · 지분율은 별도 공시 표에서 확인 필요", f"설립일 {establishment}" if establishment else ""] if value),
+                                        "출처 문서": str(filing.get("report_nm", "사업보고서")),
+                                        "출처일": str(filing.get("rcept_dt", "")),
+                                        "출처 URL": self.core.disclosure_url(receipt),
+                                        "출처 위치": f"{node.get('text', '연결대상 종속회사')} · 표 {table_index}",
+                                    }
+                                )
                             continue
                         # Summary-financial tables and narrative containers can
                         # also contain a company-name column; only use a genuine
@@ -706,7 +754,7 @@ class DartFactPackCollector:
                 if not category:
                     continue
                 try:
-                    text = self._plain_text(self.core.fetch_viewer_html(node))
+                    text = self._plain_text(self.core.fetch_viewer_html(node), limit=3_500)
                 except Exception:
                     continue
                 if len(text) < 100:
@@ -754,6 +802,53 @@ class DartFactPackCollector:
             if sections:
                 return sections
         return []
+
+    @staticmethod
+    def _corporate_highlights(profile: dict[str, Any], chronology: list[dict[str, Any]], sources: list[MatterFact]) -> list[MatterFact]:
+        """Create a compact, source-linked default issue block from filings.
+
+        This prevents a listed company report with an empty user query from
+        showing only price movement.  The facts are disclosed business scope and
+        dated corporate events; no unverified market interpretation is added.
+        """
+        source_index = {source.source_document_id: source for source in sources}
+        results: list[MatterFact] = []
+        business = str(profile.get("business_summary", "")).strip()
+        business_source = next((source for source in sources if source.category in {"사업의 내용", "회사 개요·감사보고서", "공식 사업소개", "공식 홈페이지 사업소개"}), None)
+        if business and business != "확인 필요" and business_source:
+            results.append(
+                MatterFact(
+                    category="사업 포트폴리오",
+                    fact=business,
+                    interpretation="사업보고서 또는 공식 홈페이지에 기재된 주요 사업 기준입니다. 제품·지역별 매출 및 수익성은 재무제표 기준과 구분해 확인합니다.",
+                    verification_status="verified",
+                    source_document_id=business_source.source_document_id,
+                    source_title=business_source.source_title,
+                    disclosure_date=business_source.disclosure_date,
+                    url=business_source.url,
+                )
+            )
+        for item in sorted(chronology, key=lambda value: str(value.get("date", "")), reverse=True):
+            event = str(item.get("event", "")).strip()
+            source = next((source_index[source_id] for source_id in item.get("source_ids", []) if source_id in source_index), None)
+            if not event or source is None:
+                continue
+            category = "생산시설·투자" if any(word in event for word in ("공장", "시설", "증설", "투자", "인증", "허가")) else "핵심 연혁"
+            results.append(
+                MatterFact(
+                    category=category,
+                    fact=f"{item.get('date', '')} {event}".strip(),
+                    interpretation="사업보고서 회사 연혁에 기재된 사실입니다. 실적·생산능력에 미치는 영향은 후속 공시와 재무 수치로 확인이 필요합니다.",
+                    verification_status="verified",
+                    source_document_id=source.source_document_id,
+                    source_title=source.source_title,
+                    disclosure_date=source.disclosure_date,
+                    url=source.url,
+                )
+            )
+            if len(results) >= 3:
+                break
+        return results
 
     @staticmethod
     def _price_history(stock_code: str) -> list[PricePoint]:
@@ -841,7 +936,7 @@ class DartFactPackCollector:
                 )
 
         profile = self._company_profile(company["corp_code"])
-        governance = self._governance_snapshot(company["corp_code"], max(years))
+        governance = self._governance_snapshot(company["corp_code"], max(years), str(profile.get("ceo_name", "")))
         profile.update({key: value for key, value in governance.items() if value not in (None, "")})
         parent_snapshot, parent_source = self._audit_parent_snapshot(company["corp_code"], years)
         if not profile.get("largest_holder"):
@@ -862,6 +957,15 @@ class DartFactPackCollector:
         corporate_analysis = analyze_corporate_profile(str(company.get("corp_name", request.identifier)), analysis_sources, self.gemini_api_key)
         if corporate_analysis:
             profile.update({key: value for key, value in corporate_analysis.items() if key != "chronology" and value not in (None, "", [])})
+        chronology = corporate_analysis.get("chronology", []) if corporate_analysis else []
+        if not profile.get("growth_strategy"):
+            operational_event = next(
+                (item for item in sorted(chronology, key=lambda value: str(value.get("date", "")), reverse=True)
+                 if any(word in str(item.get("event", "")) for word in ("공장", "시설", "증설", "인증", "허가", "투자"))),
+                None,
+            )
+            if operational_event:
+                profile["growth_strategy"] = f"최근 사업보고서 연혁상 {operational_event.get('date', '')} {operational_event.get('event', '')}이 기재되어 있습니다. 중장기 성장전략의 정량 목표는 추가 확인이 필요합니다."
         for key, value in company_context_profile(str(company.get("corp_name", request.identifier))).items():
             if not profile.get(key):
                 profile[key] = value
@@ -878,12 +982,14 @@ class DartFactPackCollector:
             entity["market_cap_krw"] = round(price_history[-1].close * governance["issued_shares"])
             entity["market_price_date"] = price_history[-1].trading_date
         company_name = str(company.get("corp_name", request.identifier))
-        source_matters = [*company_context_matters(company_name), *research_issue(company_name, request.issue_query)]
-        gemini_matters = analyze_issue(company_name, request.issue_query, source_matters, self.gemini_api_key)
-        research_matters = gemini_matters or source_matters
-        # User-entered issue research is the primary source for this section;
-        # generic recent disclosures are not substituted when no query is given.
-        major_matters = research_matters + price_event_matters(price_history, research_matters)
+        corporate_highlights = self._corporate_highlights(profile, chronology, corporate_sources)
+        issue_sources = [*company_context_matters(company_name), *research_issue(company_name, request.issue_query)]
+        gemini_matters = analyze_issue(company_name, request.issue_query, issue_sources, self.gemini_api_key)
+        issue_matters = gemini_matters or issue_sources
+        # Keep default business/production highlights alongside a user issue;
+        # the latter must not erase source-linked corporate context.
+        major_matters = [*corporate_highlights, *issue_matters]
+        major_matters.extend(price_event_matters(price_history, issue_matters))
         return FactPack(
             pack_id=str(uuid4()),
             generated_at=now_iso(),
@@ -898,7 +1004,7 @@ class DartFactPackCollector:
             documents=list(document_index.values()),
             financial_facts=facts,
             corporate_profile=profile,
-            chronology=corporate_analysis.get("chronology", []) if corporate_analysis else [],
+            chronology=chronology,
             corporate_sources=corporate_sources,
             subsidiaries=subsidiaries,
             major_matters=major_matters,

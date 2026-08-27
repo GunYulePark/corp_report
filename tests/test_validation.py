@@ -70,6 +70,10 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(standard_account("제품매출", "dart_RevenueFromSaleOfGoodsProduct"), "제품매출")
         self.assertEqual(standard_account("매출액", "ifrs-full_Revenue"), "매출액")
 
+    def test_balance_sheet_check_total_and_interim_profit_are_not_misclassified(self) -> None:
+        self.assertEqual(standard_account("자본과부채총계", "ifrs-full_EquityAndLiabilities"), "자본과부채총계")
+        self.assertEqual(standard_account("반기순이익", "ifrs-full_ProfitLoss"), "당기순이익")
+
     def test_audit_html_match_accepts_prefixed_total_revenue_only(self) -> None:
         frame = pd.DataFrame([
             {"재무항목": "매출채권", "당기금액": 100, "matched_exact": False, "테이블번호": 1, "행번호": 1},
@@ -124,6 +128,8 @@ class ValidationTests(unittest.TestCase):
             self.assertIn("주가", workbook.sheetnames)
             self.assertEqual(workbook["주가 data"]["A1"].value, "거래일")
             self.assertEqual(workbook["주가"]["A13"].value, "거래일")
+            self.assertIsNone(workbook["주가"]._charts[0].title)
+            self.assertTrue(workbook["주가"]._charts[0].x_axis.delete)
 
     def test_price_event_is_not_repeated_for_one_source_event(self) -> None:
         points = [

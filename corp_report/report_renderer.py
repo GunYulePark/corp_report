@@ -7,7 +7,6 @@ from typing import Iterable
 
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
-from openpyxl.chart.label import DataLabelList
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -172,11 +171,27 @@ def _display_fact_ids(facts: Iterable[FinancialFact]) -> set[str]:
     selected: set[str] = set()
     selected_keys: set[tuple[str, str, str]] = set()
     aggregate_accounts = {"차입금"}
+    preferred_statements = {
+        "매출액": "PL", "매출원가": "PL", "영업이익": "PL", "당기순이익": "PL", "이자비용": "PL",
+        "영업활동현금흐름": "CF",
+        "자산총계": "BS", "유동자산": "BS", "부채총계": "BS", "유동부채": "BS", "자본총계": "BS",
+        "현금및현금성자산": "BS", "매출채권": "BS", "재고자산": "BS", "자본금": "BS",
+    }
     for fact in facts:
         if fact.value_krw is None:
             continue
         if fact.standard_account in aggregate_accounts:
             selected.add(fact.fact_id)
+            continue
+        key = (fact.period_label, fact.fs_div, fact.standard_account)
+        preferred_statement = preferred_statements.get(fact.standard_account)
+        if key not in selected_keys and (not preferred_statement or fact.statement == preferred_statement):
+            selected.add(fact.fact_id)
+            selected_keys.add(key)
+    # Some reporters classify a line differently from the standard statement
+    # code.  Retain one source fact as a fallback rather than rendering N/A.
+    for fact in facts:
+        if fact.value_krw is None or fact.standard_account in aggregate_accounts:
             continue
         key = (fact.period_label, fact.fs_div, fact.standard_account)
         if key not in selected_keys:
@@ -364,6 +379,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     competencies = [str(value).strip() for value in profile.get("core_competencies", []) if str(value).strip()]
     for index in range(4):
         labeled_row(15 + index, "핵심 역량" if index == 0 else "", competencies[index] if index < len(competencies) else "")
+    labeled_row(19, "대표이사 약력", str(profile.get("ceo_bio", "")).strip() or "확인 필요", height=30)
 
     ws.merge_cells("E20:H20")
     ws["E20"] = "핵심 연혁"
@@ -452,9 +468,8 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         ws["T50"].font = Font(name="맑은 고딕", size=9, bold=True, color="555555")
         ws["T50"].alignment = CENTER
         chart = LineChart()
-        chart.title = "최근 1년 주가 추이"
-        chart.y_axis.title = "종가"
-        chart.x_axis.title = "거래일"
+        chart.x_axis.delete = True
+        chart.y_axis.delete = True
         chart.height = 7.5
         chart.width = 13
         chart_source_ws = price_data_ws or ws
@@ -463,7 +478,6 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         chart.add_data(data, titles_from_data=False)
         chart.set_categories(categories)
         chart.legend = None
-        chart.dataLabels = DataLabelList()
         ws.add_chart(chart, "T51")
     _style_section(ws, 68, 4, 38, "라. 자회사 등 현황")
     subsidiary_headers = [(5, 8, "사업군"), (9, 14, "자회사명"), (15, 18, "지분율"), (19, 34, "사업영역·비고")]
@@ -475,7 +489,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
         cell.alignment = CENTER
         cell.border = Border(left=HAIR, right=HAIR, top=HAIR, bottom=HAIR)
     if pack.subsidiaries:
-        for offset, subsidiary in enumerate(pack.subsidiaries[:3], start=0):
+        for offset, subsidiary in enumerate(pack.subsidiaries[:5], start=0):
             row = 71 + offset
             values = [
                 subsidiary.get("사업군", "확인 필요"),
@@ -498,7 +512,7 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     for column in range(1, 39):
         ws.column_dimensions[get_column_letter(column)].width = 3.2
     ws.column_dimensions["C"].width = 12
-    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=74))
+    ws.row_breaks.append(__import__("openpyxl").worksheet.pagebreak.Break(id=77))
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
@@ -611,9 +625,8 @@ def _write_price_sheet(ws, pack: FactPack) -> None:
                 ws.cell(row, col).fill = PatternFill("solid", fgColor="FFF2CC")
 
     chart = LineChart()
-    chart.title = "최근 1년 일별 종가"
-    chart.y_axis.title = "종가"
-    chart.x_axis.title = "거래일"
+    chart.x_axis.delete = True
+    chart.y_axis.delete = True
     chart.height = 9
     chart.width = 16
     chart.add_data(Reference(ws, min_col=2, min_row=13, max_row=13 + len(points)), titles_from_data=True)

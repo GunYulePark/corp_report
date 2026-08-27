@@ -6,9 +6,20 @@ from typing import Any
 from .models import FactPack, FinancialFact
 
 
+_STATEMENT_BY_ACCOUNT = {
+    "매출액": "PL", "매출원가": "PL", "영업이익": "PL", "당기순이익": "PL", "이자비용": "PL",
+    "영업활동현금흐름": "CF",
+    "자산총계": "BS", "유동자산": "BS", "부채총계": "BS", "유동부채": "BS", "자본총계": "BS",
+    "현금및현금성자산": "BS", "매출채권": "BS", "재고자산": "BS", "자본금": "BS", "차입금": "BS",
+}
+
+
 def _latest_fact(facts: list[FinancialFact], account: str) -> FinancialFact | None:
     candidates = [item for item in facts if item.standard_account == account and item.value_krw is not None]
-    return candidates[-1] if candidates else None
+    preferred_statement = _STATEMENT_BY_ACCOUNT.get(account)
+    if preferred_statement:
+        candidates = [item for item in candidates if item.statement == preferred_statement] or candidates
+    return candidates[0] if candidates else None
 
 
 def validate_fact_pack(pack: FactPack) -> list[dict[str, Any]]:
@@ -20,9 +31,12 @@ def validate_fact_pack(pack: FactPack) -> list[dict[str, Any]]:
     for fact in pack.financial_facts:
         if fact.fs_div != primary_basis:
             results.append({"severity": "error", "rule": "basis_consistency", "fact_id": fact.fact_id, "message": "선택한 재무제표 기준과 다릅니다."})
-        if fact.value_krw is None:
+        # OpenDART includes blank comparative/detail rows.  Warn only when a
+        # report metric that can be displayed is missing, not for every raw
+        # disclosure row retained for auditability.
+        if fact.value_krw is None and fact.standard_account in required:
             results.append({"severity": "warning", "rule": "value_present", "fact_id": fact.fact_id, "message": "수집값이 없습니다."})
-        if not fact.source_document_id:
+        if fact.value_krw is not None and fact.standard_account in _STATEMENT_BY_ACCOUNT and not fact.source_document_id:
             results.append({"severity": "warning", "rule": "source_document", "fact_id": fact.fact_id, "message": "공시 문서 연결을 확인해야 합니다."})
 
     by_period: dict[str, list[FinancialFact]] = defaultdict(list)
