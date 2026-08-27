@@ -105,6 +105,7 @@ def _source_payload(matters: list[MatterFact]) -> list[dict[str, str]]:
             "source_id": item.source_document_id,
             "category": item.category,
             "fact": item.fact,
+            "source_excerpt": item.source_excerpt[:2_800],
             "interpretation": item.interpretation,
             "verification_status": item.verification_status,
             "source_title": item.source_title,
@@ -122,6 +123,7 @@ def _prompt(company_name: str, issue_query: str, matters: list[MatterFact]) -> s
 사용자 요청: {issue_query}
 
 아래 SOURCE 목록만 근거로 사용해 분석 JSON을 작성하라. 외부 지식, 추정, 숫자 보완은 금지한다.
+SOURCE의 source_excerpt는 원문에서 제한 수집한 분석용 문맥이며, 최종 문장은 이를 길게 인용하지 말고 사실을 요약하라.
 각 items 항목은 source_ids에 SOURCE의 source_id를 하나 이상 정확히 넣어야 한다.
 SOURCE의 verification_status가 needs_review이면 그 항목도 needs_review으로 유지한다.
 계약 최대금액과 선급금, 확정 매출을 혼동하지 말고, 비교 대상의 후보 수·개발 단계·권리범위가 다르면 비교 한계를 해석에 명시한다.
@@ -297,13 +299,15 @@ def _to_matters(payload: dict[str, Any], sources: list[MatterFact]) -> list[Matt
 
 
 def analyze_issue(company_name: str, issue_query: str, sources: list[MatterFact], api_key: str = "") -> list[MatterFact]:
-    """Prefer Gemini Google Search grounding; preserve source-pack fallback."""
+    """Use retrieved news/official context; grounding is opt-in due tool quotas."""
     key = api_key.strip() or os.getenv("GEMINI_API_KEY", "").strip()
     if not key or not issue_query.strip():
         return []
-    grounded = _analyze_grounded_issue(company_name, issue_query, key)
-    if grounded:
-        return grounded
+    use_grounding = os.getenv("GEMINI_USE_SEARCH_GROUNDING", "").strip().lower() in {"1", "true", "yes"}
+    if use_grounding:
+        grounded = _analyze_grounded_issue(company_name, issue_query, key)
+        if grounded:
+            return grounded
     if not sources:
         return []
     model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL

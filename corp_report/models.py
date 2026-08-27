@@ -74,6 +74,9 @@ class MatterFact:
     source_title: str
     disclosure_date: str
     url: str
+    # Bounded retrieval text used only as Gemini context.  It is intentionally
+    # kept out of the executive report and detailed source display columns.
+    source_excerpt: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

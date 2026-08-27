@@ -10,11 +10,12 @@ continues to have a document date and URL in the Fact Pack.
 """
 
 import html
+import json
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 
@@ -23,6 +24,7 @@ from .models import MatterFact, PricePoint
 
 NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
 USER_AGENT = {"User-Agent": "Mozilla/5.0 (CorporateReportBot/1.0)"}
+ARTICLE_EXCERPT_LIMIT = 2_400
 
 
 def _compact(value: str) -> str:
@@ -42,8 +44,112 @@ def _date_from_rss(value: str) -> str:
         return ""
 
 
-def _news_search(query: str, limit: int = 6) -> list[MatterFact]:
-    """Return traceable news leads, never verified facts inferred from snippets."""
+def _resolve_google_news_url(url: str) -> str:
+    """Resolve a public Google News RSS wrapper to its publisher URL when possible.
+
+    Google News RSS links are wrappers rather than normal HTTP redirects.  The
+    public page's internal resolver is used only to obtain the already-linked
+    publisher URL; failure is deliberately harmless and retains the original
+    URL/title as a reviewable lead.  This is kept separate from article parsing
+    so the report never asserts information merely because the resolver worked.
+    """
+    parsed = urlparse(url)
+    if not parsed.netloc.endswith("news.google.com"):
+        return url
+    article_id = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+    if not article_id:
+        return url
+
+    try:
+        article_page = requests.get(
+            f"https://news.google.com/articles/{article_id}",
+            headers=USER_AGENT,
+            timeout=10,
+        )
+        article_page.raise_for_status()
+    except requests.RequestException:
+        return url
+    signature = re.search(r"data-n-a-sg=[\"']([^\"']+)", article_page.text)
+    timestamp = re.search(r"data-n-a-ts=[\"'](\d+)", article_page.text)
+    if not signature or not timestamp:
+        return url
+
+    # This compact request shape mirrors the public Google News link resolver.
+    # It carries no user credential and does not bypass rate limits.
+    request_args = [
+        "garturlreq",
+        [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1,
+          None, None, None, None, None, 0, 1],
+         "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0],
+        article_id,
+        int(timestamp.group(1)),
+        signature.group(1),
+    ]
+    rpc_call = [[["Fbv4je", json.dumps(request_args, ensure_ascii=False, separators=(",", ":")), None, "generic"]]]
+    try:
+        response = requests.post(
+            "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+            data={"f.req": json.dumps(rpc_call, ensure_ascii=False, separators=(",", ":"))},
+            headers={
+                **USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+                "Referer": "https://news.google.com/",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return url
+
+    # The batch response nests a JSON-encoded payload, with escaping varying
+    # slightly across regions.  Read only an http(s) field from garturlres.
+    marker = '[\\"garturlres\\",\\"'
+    start = response.text.find(marker)
+    if start < 0:
+        return url
+    encoded = response.text[start + len(marker):]
+    candidate = encoded.split('\\",', 1)[0]
+    candidate = html.unescape(
+        candidate.replace("\\/", "/").replace("\\u003d", "=").replace("\\=", "=")
+    )
+    return candidate if candidate.startswith(("https://", "http://")) else url
+
+
+def _article_excerpt(url: str) -> tuple[str, str]:
+    """Fetch a bounded article-body excerpt for model context, never report copy.
+
+    Google News RSS provides leads only.  We follow one lead to its publisher,
+    strip non-content markup, and retain a short context window solely for the
+    source-constrained Gemini step.  Pages that remain on Google News, require
+    a non-HTML response, or do not expose readable body text fall back to their
+    title-only lead instead of being treated as a verified source.
+    """
+    resolved_url = _resolve_google_news_url(url)
+    try:
+        response = requests.get(resolved_url, headers=USER_AGENT, timeout=8, allow_redirects=True)
+        response.raise_for_status()
+    except requests.RequestException:
+        return "", resolved_url
+    final_url = response.url or resolved_url
+    parsed = urlparse(final_url)
+    if parsed.netloc.endswith("news.google.com") or "html" not in response.headers.get("Content-Type", "").lower():
+        return "", resolved_url
+    page = response.text
+    article_match = re.search(r"(?is)<article\b[^>]*>(.*?)</article>", page)
+    content = article_match.group(1) if article_match else page
+    content = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav|aside).*?>.*?</\1>", " ", content)
+    content = html.unescape(re.sub(r"(?is)<[^>]+>", " ", content)).replace("\xa0", " ")
+    content = re.sub(r"\s+", " ", content).strip()
+    if len(content) < 240:
+        return "", resolved_url
+    # Preserve the resolved publisher article URL as the evidence link.  A few
+    # publishers redirect automated requests to a mobile home page, which is
+    # useful only as a fetch fallback and must not replace the source record.
+    return content[:ARTICLE_EXCERPT_LIMIT], resolved_url
+
+
+def _news_search(query: str, limit: int = 4) -> list[MatterFact]:
+    """Return traceable news leads with bounded publisher text for Gemini only."""
     url = NEWS_RSS.format(query=quote_plus(query))
     try:
         response = requests.get(url, headers=USER_AGENT, timeout=20)
@@ -57,19 +163,22 @@ def _news_search(query: str, limit: int = 6) -> list[MatterFact]:
     for item in root.findall("./channel/item"):
         title = _news_title(item.findtext("title", ""))
         link = item.findtext("link", "")
+        publisher = (item.findtext("source", "") or "").strip()
         if not title or title in seen:
             continue
         seen.add(title)
+        excerpt, source_url = _article_excerpt(link)
         results.append(
             MatterFact(
                 category="웹 이슈 조사·뉴스",
                 fact=title,
-                interpretation="입력 이슈와 관련된 웹 검색 결과입니다. 기사 제목만으로는 계약 조건·임상 결과를 확정하지 않으며, URL 원문 검토가 필요합니다.",
+                interpretation="입력 이슈 관련 뉴스 출처입니다. 기사 원문은 Gemini 분석용으로 제한 수집하며, 계약 조건·재무 영향은 원문 및 공시 대조가 필요합니다.",
                 verification_status="needs_review",
                 source_document_id=f"web-news-{len(results) + 1}",
-                source_title=f"Google News 검색: {query}",
+                source_title=f"{publisher} · {title}" if publisher else f"Google News 검색: {query}",
                 disclosure_date=_date_from_rss(item.findtext("pubDate", "")),
-                url=link,
+                url=source_url,
+                source_excerpt=excerpt,
             )
         )
         if len(results) >= limit:

@@ -9,7 +9,7 @@ import pandas as pd
 
 from corp_report.models import FactPack, FinancialFact, MatterFact, PricePoint, SourceDocument
 from corp_report.collector import DartFactPackCollector, _optional_int, standard_account
-from corp_report.gemini_research import _grounded_to_matters, _to_matters
+from corp_report.gemini_research import _grounded_to_matters, _source_payload, _to_matters
 from corp_report.report_renderer import render_report
 from corp_report.validation import growth_display, validate_fact_pack
 from corp_report.web_research import company_context_matters, company_context_profile, price_event_matters
@@ -179,3 +179,12 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].url, url)
         self.assertEqual(results[0].verification_status, "needs_review")
+
+    def test_news_excerpt_is_sent_to_gemini_context_not_report_fact(self) -> None:
+        source = MatterFact(
+            "웹 이슈 조사·뉴스", "기사 제목", "검토 필요", "needs_review", "news-1",
+            "뉴스", "2026-01-01", "https://example.com/news", source_excerpt="기사 원문 발췌",
+        )
+        payload = _source_payload([source])
+        self.assertEqual(payload[0]["fact"], "기사 제목")
+        self.assertEqual(payload[0]["source_excerpt"], "기사 원문 발췌")

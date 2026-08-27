@@ -72,7 +72,7 @@ def create_app() -> None:
                 issue = ui.input("이슈 조사 요청", placeholder="예: 최근 3.2조 기술수출과 국내 비만치료제 기술수출 금액·파이프라인 비교").classes("w-[32rem]")
                 latest_interim = ui.checkbox("최신 분기·반기 포함", value=True)
                 price_chart = ui.checkbox("상장사 주가 추이 포함", value=True)
-            ui.label("이슈 조사 방식: 출처를 수집한 뒤 Gemini가 사실·비교·시사점 JSON으로 정리합니다. 키는 서버 로컬 설정에서만 읽으며 확인되지 않은 기사 검색 결과는 ‘검토 필요’로 표시합니다.").classes("text-xs text-slate-500")
+            ui.label("이슈 조사 방식: 뉴스·공식 출처의 제한 원문을 수집한 뒤 Gemini가 사실·비교·시사점 JSON으로 정리합니다. 기사 기반 결과는 ‘검토 필요’로 표시합니다.").classes("text-xs text-slate-500")
             ui.label("OpenDART API 키는 로컬 설정 파일에서만 읽습니다.").classes("text-xs text-slate-500")
 
         status = ui.label("조건을 입력한 뒤 보고서를 생성하세요.").classes("text-slate-600")
