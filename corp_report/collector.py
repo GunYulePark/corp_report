@@ -386,11 +386,16 @@ class DartFactPackCollector:
             pass
         try:
             executives = self.core.call_open_dart_json("exctvSttus.json", self.api_key, params).get("list", [])
-            matching = [row for row in executives if ceo_name and _clean(row.get("nm")) == _clean(ceo_name)]
-            representative = next((row for row in matching if "대표" in str(row.get("ofcps", ""))), matching[0] if matching else None)
-            career = re.sub(r"\s+", " ", str((representative or {}).get("main_career", ""))).strip()
-            if career and career.lower() not in {"nan", "none", "-"}:
-                result["ceo_bio"] = career[:500]
+            normalized_ceo = _clean(ceo_name)
+            matching = [row for row in executives if normalized_ceo and _clean(row.get("nm")) in normalized_ceo]
+            representatives = [row for row in matching if "대표" in str(row.get("ofcps", ""))] or [row for row in executives if "대표" in str(row.get("ofcps", ""))]
+            careers = []
+            for representative in representatives[:2]:
+                career = re.sub(r"\s+", " ", str(representative.get("main_career", ""))).strip()
+                if career and career.lower() not in {"nan", "none", "-"}:
+                    careers.append(f"{representative.get('nm', '대표이사')}: {career}")
+            if careers:
+                result["ceo_bio"] = " / ".join(careers)[:500]
         except Exception:
             pass
         return result
@@ -468,6 +473,44 @@ class DartFactPackCollector:
                 }
         return list(results.values())[:50]
 
+    @staticmethod
+    def _table_unit(tables: list[pd.DataFrame]) -> str:
+        for table in tables[:3]:
+            text = " ".join(str(value) for value in table.fillna("").to_numpy().flatten())
+            match = re.search(r"단위\s*:\s*(천원|백만원|원)", text)
+            if match:
+                return match.group(1)
+        return "공시 단위 확인 필요"
+
+    def _subsidiary_investment_stakes(self, nodes: list[dict[str, str]], filing: dict[str, Any], receipt: str) -> dict[str, dict[str, str]]:
+        """Join ending ownership percentages from the business-report investment table."""
+        results: dict[str, dict[str, str]] = {}
+        for node in [item for item in nodes if "타법인출자" in _clean(item.get("text", ""))]:
+            try:
+                tables = pd.read_html(StringIO(self.core.fetch_viewer_html(node)))
+            except Exception:
+                continue
+            for table_index, table in enumerate(tables, start=1):
+                if table.empty or len(table.columns) < 2:
+                    continue
+                columns = self._flat_columns(table)
+                name_index = self._column_index(columns, ("법인명", "회사명", "상호"))
+                stake_indices = [index for index, column in enumerate(columns) if "지분율" in column]
+                if name_index is None or not stake_indices:
+                    continue
+                stake_index = stake_indices[-1]  # ending ownership, not opening ownership
+                for values in table.itertuples(index=False, name=None):
+                    name = str(values[name_index] if name_index < len(values) else "").strip()
+                    stake = str(values[stake_index] if stake_index < len(values) else "").strip()
+                    key = self._subsidiary_name_key(name)
+                    if not name or key in {"법인명", "회사명", "합계", "nan", "none"} or not stake or stake.lower() in {"nan", "none", "-"}:
+                        continue
+                    results[key] = {
+                        "지분율": stake if "%" in stake else f"{stake}%",
+                        "지분율 출처": f"{node.get('text', '타법인출자 현황')} · 표 {table_index}",
+                    }
+        return results
+
     def _subsidiaries(self, corp_code: str, years: list[int]) -> list[dict[str, str]]:
         """Extract subsidiary rows from the latest business/audit-report note table when available.
 
@@ -494,6 +537,7 @@ class DartFactPackCollector:
                     nodes = self.core.parse_dart_tree_nodes(self.core.fetch_report_main_html(receipt))
                 except Exception:
                     continue
+                investment_stakes = self._subsidiary_investment_stakes(nodes, filing, receipt)
                 note_nodes = [
                     node for node in nodes
                     if any(hint in _clean(node.get("text", "")) for hint in ("종속기업", "연결대상", "타법인출자"))
@@ -507,6 +551,7 @@ class DartFactPackCollector:
                         tables = pd.read_html(StringIO(self.core.fetch_viewer_html(node)))
                     except Exception:
                         continue
+                    disclosed_unit = self._table_unit(tables)
                     ownership_rows: list[dict[str, str]] = []
                     financials: dict[str, dict[str, str]] = {}
                     for table_index, table in enumerate(tables, start=1):
@@ -560,16 +605,17 @@ class DartFactPackCollector:
                                 assets = str(values[asset_index] if asset_index is not None and asset_index < len(values) else "").strip()
                                 establishment_index = self._column_index(columns, ("설립일",))
                                 establishment = str(values[establishment_index] if establishment_index is not None and establishment_index < len(values) else "").strip()
+                                investment = investment_stakes.get(self._subsidiary_name_key(name), {})
                                 ownership_rows.append(
                                     {
                                         "사업군": self._subsidiary_group(business, location),
                                         "자회사명": name,
-                                        "지분율": "확인 필요",
+                                        "지분율": investment.get("지분율", "확인 필요"),
                                         "사업영역": business or "확인 필요",
                                         "소재지": location or "확인 필요",
-                                        "자산(공시 표기)": f"{assets}백만원" if assets and assets.lower() not in {"nan", "none"} else "",
+                                        "자산(공시 표기)": f"{assets}{disclosed_unit}" if assets and assets.lower() not in {"nan", "none"} else "",
                                         "주요 생산시설 또는 핵심 역량": "연결대상 종속회사 상세표상 주요사업",
-                                        "비고": " · ".join(value for value in ["연결대상 종속회사 · 지분율은 별도 공시 표에서 확인 필요", f"설립일 {establishment}" if establishment else ""] if value),
+                                        "비고": " · ".join(value for value in ["연결대상 종속회사", investment.get("지분율 출처", "지분율은 별도 공시 표에서 확인 필요"), f"설립일 {establishment}" if establishment else ""] if value),
                                         "출처 문서": str(filing.get("report_nm", "사업보고서")),
                                         "출처일": str(filing.get("rcept_dt", "")),
                                         "출처 URL": self.core.disclosure_url(receipt),
@@ -828,6 +874,20 @@ class DartFactPackCollector:
                     url=business_source.url,
                 )
             )
+        growth_strategy = str(profile.get("growth_strategy", "")).strip()
+        if growth_strategy and growth_strategy != "확인 필요" and business_source:
+            results.append(
+                MatterFact(
+                    category="성장 전략·글로벌 진출",
+                    fact=growth_strategy,
+                    interpretation="사업보고서·공식 홈페이지에 명시된 허가, 수출 또는 생산기반 확장 내용입니다. 계약금액·매출 기여는 개별 공시와 재무제표로 별도 검증합니다.",
+                    verification_status="verified",
+                    source_document_id=business_source.source_document_id,
+                    source_title=business_source.source_title,
+                    disclosure_date=business_source.disclosure_date,
+                    url=business_source.url,
+                )
+            )
         for item in sorted(chronology, key=lambda value: str(value.get("date", "")), reverse=True):
             event = str(item.get("event", "")).strip()
             source = next((source_index[source_id] for source_id in item.get("source_ids", []) if source_id in source_index), None)
@@ -846,7 +906,7 @@ class DartFactPackCollector:
                     url=source.url,
                 )
             )
-            if len(results) >= 3:
+            if len(results) >= 4:
                 break
         return results
 
