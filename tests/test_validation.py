@@ -75,6 +75,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(standard_account("자본과부채총계", "ifrs-full_EquityAndLiabilities"), "자본과부채총계")
         self.assertEqual(standard_account("반기순이익", "ifrs-full_ProfitLoss"), "당기순이익")
         self.assertEqual(standard_account("IV. 기말자본", "ifrs-full_Equity"), "자본총계")
+        self.assertEqual(standard_account("기타자본구성요소", "dart_ElementsOfOtherStockholdersEquity"), "기타자본구성요소")
 
     def test_audit_html_match_accepts_prefixed_total_revenue_only(self) -> None:
         frame = pd.DataFrame([

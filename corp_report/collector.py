@@ -149,7 +149,7 @@ def standard_account(account_name: object, account_id: object) -> str:
     # Some OpenDART filers label equity as e.g. ``IV. 기말자본`` while
     # retaining the standard IFRS concept.  Prefer the concept in that case
     # instead of leaving a required balance-sheet item blank.
-    if "자본총계" in name or name == "자본" or concept == "equity" or concept.endswith("_equity"):
+    if "자본총계" in name or name == "자본" or concept in {"equity", "ifrs-full_equity"}:
         return "자본총계"
     if "이자비용" in name or "interestexpense" in concept or "financecosts" in concept:
         return "이자비용"
