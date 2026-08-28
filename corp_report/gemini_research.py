@@ -100,20 +100,27 @@ CORPORATE_SCHEMA: dict[str, Any] = {
 
 
 def _source_payload(matters: list[MatterFact]) -> list[dict[str, str]]:
-    return [
-        {
+    payload = []
+    for item in matters[:12]:
+        is_primary = item.verification_status == "verified" and (
+            item.source_document_id.startswith(("dart-", "official-"))
+            or item.category in {"사업의 내용", "회사 연혁", "회사 개요·감사보고서", "회사 개요·감사보고서 주석", "공식 홈페이지 사업소개", "공식 사업소개"}
+        )
+        payload.append(
+            {
             "source_id": item.source_document_id,
             "category": item.category,
             "fact": item.fact,
             "source_excerpt": item.source_excerpt[:2_800],
             "interpretation": item.interpretation,
             "verification_status": item.verification_status,
+            "source_tier": "primary" if is_primary else "secondary",
             "source_title": item.source_title,
             "date": item.disclosure_date,
             "url": item.url,
-        }
-        for item in matters[:12]
-    ]
+            }
+        )
+    return payload
 
 
 def _prompt(company_name: str, issue_query: str, matters: list[MatterFact]) -> str:
@@ -123,9 +130,11 @@ def _prompt(company_name: str, issue_query: str, matters: list[MatterFact]) -> s
 사용자 요청: {issue_query}
 
 아래 SOURCE 목록만 근거로 사용해 분석 JSON을 작성하라. 외부 지식, 추정, 숫자 보완은 금지한다.
+SOURCE의 source_tier=primary는 DART 공시 또는 회사 공식자료다. 동일 주제를 다루면 primary를 우선 인용하고, secondary 뉴스는 발견·보완 근거로만 사용하라.
 SOURCE의 source_excerpt는 원문에서 제한 수집한 분석용 문맥이며, 최종 문장은 이를 길게 인용하지 말고 사실을 요약하라.
 각 items 항목은 source_ids에 SOURCE의 source_id를 하나 이상 정확히 넣어야 한다.
 SOURCE의 verification_status가 needs_review이면 그 항목도 needs_review으로 유지한다.
+primary 근거 없이 secondary 뉴스만 사용하는 항목은 verification_status를 needs_review으로 작성하고, 계약·매출·이익의 확정 수치로 단정하지 말라.
 계약 최대금액과 선급금, 확정 매출을 혼동하지 말고, 비교 대상의 후보 수·개발 단계·권리범위가 다르면 비교 한계를 해석에 명시한다.
 사실은 짧고 검증 가능하게, 해석은 사업·재무상 시사점과 한계를 포함해 작성한다.
 출처로 뒷받침되지 않는 문장은 items에 넣지 말라.

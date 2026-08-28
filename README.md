@@ -20,7 +20,7 @@ DART_API_KEY=발급받은_OpenDART_API_키
 
 브라우저에서 `http://localhost:8080`을 열어 회사명 또는 종목코드, 별도/연결 기준, 재무연도, **이슈 조사 요청**을 입력합니다. 기본 기준은 별도(OFS)입니다. 이슈를 입력하면 요청 문장을 기준으로 웹 검색 결과와 확인 가능한 공식 자료를 `주요사항` 시트에 사실·해석·출처 URL로 남깁니다. 기사 제목만 확인된 결과는 `needs_review`로 표시하며, 빈 이슈란을 최근 공시 목록으로 대체하지 않습니다.
 
-`corp_report/local_settings.py`에 `GEMINI_API_KEY`를 추가하면, 이슈 조사 시 Google News·공식 출처에서 수집한 제한 원문 발췌를 Gemini가 사실·비교·시사점 JSON으로 구조화합니다. 본장에는 사용자 이슈를 일반 회사소개보다 먼저 표시하고, 기사·웹 근거는 `검토 필요`로 표시합니다. 키 미설정·호출 실패 시에는 제목·URL 기반의 출처 결과로 자동 대체합니다. Gemini Google Search grounding은 도구별 할당량을 쓰므로 기본 비활성화이며, 필요하면 `GEMINI_USE_SEARCH_GROUNDING=true`로 별도 활성화할 수 있습니다. 키는 서버 프로세스에서만 읽고 Excel, Fact Pack JSON, 브라우저에 기록하지 않습니다.
+`corp_report/local_settings.py`에 `GEMINI_API_KEY`를 추가하면, 이슈 조사 시 DART 공시·회사 공식자료를 1차 근거로 우선하고 Google News·공식 출처에서 수집한 제한 원문 발췌를 보완 근거로 사용해 Gemini가 사실·비교·시사점 JSON으로 구조화합니다. 본장에는 사용자 이슈를 일반 회사소개보다 먼저 표시하고, 기사·웹 근거는 `검토 필요`로 표시합니다. 키 미설정·호출 실패 시에는 제목·URL 기반의 출처 결과로 자동 대체합니다. 자회사 요약재무는 원문 표기 단위로만 보이며 내부거래 제거 전 수치이므로 연결 손익 기여도로 직접 해석하지 않습니다. Gemini Google Search grounding은 도구별 할당량을 쓰므로 기본 비활성화이며, 필요하면 `GEMINI_USE_SEARCH_GROUNDING=true`로 별도 활성화할 수 있습니다. 키는 서버 프로세스에서만 읽고 Excel, Fact Pack JSON, 브라우저에 기록하지 않습니다.
 
 ## 기존 수집기 연결
 

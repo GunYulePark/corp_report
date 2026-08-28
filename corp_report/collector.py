@@ -146,7 +146,10 @@ def standard_account(account_name: object, account_id: object) -> str:
         return "유동부채"
     if "부채총계" in name or name == "부채" or "liabilities" == concept:
         return "부채총계"
-    if "자본총계" in name or name == "자본" or "equity" == concept:
+    # Some OpenDART filers label equity as e.g. ``IV. 기말자본`` while
+    # retaining the standard IFRS concept.  Prefer the concept in that case
+    # instead of leaving a required balance-sheet item blank.
+    if "자본총계" in name or name == "자본" or concept == "equity" or concept.endswith("_equity"):
         return "자본총계"
     if "이자비용" in name or "interestexpense" in concept or "financecosts" in concept:
         return "이자비용"
@@ -587,6 +590,7 @@ class DartFactPackCollector:
                                     "자산(공시 표기)": field(asset_index),
                                     "매출액(공시 표기)": field(revenue_index),
                                     "당기순이익(공시 표기)": field(profit_index),
+                                    "재무 단위": disclosed_unit or "공시 표기 단위",
                                 }
                             continue
                         # A detailed connected-subsidiary table in a business
@@ -666,6 +670,42 @@ class DartFactPackCollector:
                     if audit_rows:
                         return audit_rows
         return []
+
+    @staticmethod
+    def _subsidiary_financial_matters(subsidiaries: list[dict[str, str]]) -> list[MatterFact]:
+        """Expose disclosed subsidiary metrics without inferring consolidation impact.
+
+        Related-party tables are often in a different unit from the parent's
+        financial statements and include intra-group transactions.  The report
+        therefore shows the source-table figures as a review point, not as a
+        calculated contribution to consolidated sales or profit.
+        """
+        results: list[MatterFact] = []
+        for subsidiary in subsidiaries:
+            metrics = []
+            for label in ("자산(공시 표기)", "매출액(공시 표기)", "당기순이익(공시 표기)"):
+                value = str(subsidiary.get(label, "")).strip()
+                if value and value not in {"확인 필요", "N/A", "nan", "None"}:
+                    metrics.append(f"{label.replace('(공시 표기)', '')} {value}")
+            if not metrics:
+                continue
+            name = str(subsidiary.get("자회사명", "자회사")).strip() or "자회사"
+            unit = str(subsidiary.get("재무 단위", "공시 표기 단위")).strip() or "공시 표기 단위"
+            results.append(
+                MatterFact(
+                    category="자회사 재무·연결 영향",
+                    fact=f"{name}: {' · '.join(metrics)} ({unit})",
+                    interpretation="종속기업 주석 또는 연결대상회사 표의 개별 요약 수치다. 내부거래 제거와 지배력 변동을 반영한 연결 손익 기여도로 직접 해석할 수 없으므로, 투자 판단 시 연결 재무제표와 함께 확인한다.",
+                    verification_status="verified",
+                    source_document_id=f"subsidiary-financial-{DartFactPackCollector._subsidiary_name_key(name)}",
+                    source_title=str(subsidiary.get("출처 문서", "사업보고서")),
+                    disclosure_date=str(subsidiary.get("출처일", "")),
+                    url=str(subsidiary.get("출처 URL", "")),
+                )
+            )
+            if len(results) >= 3:
+                break
+        return results
 
     def _audit_parent_snapshot(self, corp_code: str, years: list[int]) -> tuple[dict[str, Any], MatterFact | None]:
         """Fill an audit-only filer's parent relationship from an audited note.
@@ -1043,7 +1083,20 @@ class DartFactPackCollector:
             entity["market_price_date"] = price_history[-1].trading_date
         company_name = str(company.get("corp_name", request.identifier))
         corporate_highlights = self._corporate_highlights(profile, chronology, corporate_sources)
-        issue_sources = [*company_context_matters(company_name), *research_issue(company_name, request.issue_query)]
+        # Let the issue model prefer filing/official material already collected
+        # for this company.  News leads remain useful for discovery, but cannot
+        # displace a supplied first-party source when both cover the question.
+        primary_issue_sources = [
+            source for source in corporate_sources
+            if source.category in {"사업의 내용", "회사 연혁", "회사 개요·감사보고서", "회사 개요·감사보고서 주석", "공식 홈페이지 사업소개", "공식 사업소개"}
+        ]
+        issue_sources: list[MatterFact] = []
+        issue_source_ids: set[str] = set()
+        for source in [*primary_issue_sources, *company_context_matters(company_name), *research_issue(company_name, request.issue_query)]:
+            if source.source_document_id and source.source_document_id in issue_source_ids:
+                continue
+            issue_source_ids.add(source.source_document_id)
+            issue_sources.append(source)
         gemini_matters = analyze_issue(company_name, request.issue_query, issue_sources, self.gemini_api_key)
         issue_matters = gemini_matters or issue_sources
         if any(item.category.startswith("Gemini 검색 기반·") for item in gemini_matters):
@@ -1054,7 +1107,8 @@ class DartFactPackCollector:
             issue_provider = "source_only"
         # Keep default business/production highlights alongside a user issue;
         # the latter must not erase source-linked corporate context.
-        major_matters = [*corporate_highlights, *issue_matters]
+        subsidiary_financial_matters = self._subsidiary_financial_matters(subsidiaries)
+        major_matters = [*corporate_highlights, *issue_matters, *subsidiary_financial_matters]
         major_matters.extend(price_event_matters(price_history, issue_matters))
         return FactPack(
             pack_id=str(uuid4()),

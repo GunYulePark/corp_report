@@ -74,6 +74,7 @@ class ValidationTests(unittest.TestCase):
     def test_balance_sheet_check_total_and_interim_profit_are_not_misclassified(self) -> None:
         self.assertEqual(standard_account("자본과부채총계", "ifrs-full_EquityAndLiabilities"), "자본과부채총계")
         self.assertEqual(standard_account("반기순이익", "ifrs-full_ProfitLoss"), "당기순이익")
+        self.assertEqual(standard_account("IV. 기말자본", "ifrs-full_Equity"), "자본총계")
 
     def test_audit_html_match_accepts_prefixed_total_revenue_only(self) -> None:
         frame = pd.DataFrame([
@@ -188,3 +189,20 @@ class ValidationTests(unittest.TestCase):
         payload = _source_payload([source])
         self.assertEqual(payload[0]["fact"], "기사 제목")
         self.assertEqual(payload[0]["source_excerpt"], "기사 원문 발췌")
+        self.assertEqual(payload[0]["source_tier"], "secondary")
+
+    def test_subsidiary_financial_matter_keeps_disclosed_units(self) -> None:
+        matters = DartFactPackCollector._subsidiary_financial_matters([
+            {
+                "자회사명": "테스트바이오",
+                "매출액(공시 표기)": "1,234",
+                "당기순이익(공시 표기)": "56",
+                "재무 단위": "백만원",
+                "출처 문서": "사업보고서",
+                "출처일": "2026-03-01",
+                "출처 URL": "https://example.com/sub",
+            }
+        ])
+        self.assertEqual(len(matters), 1)
+        self.assertIn("백만원", matters[0].fact)
+        self.assertIn("연결 손익 기여도", matters[0].interpretation)

@@ -592,11 +592,20 @@ def _write_summary_sheet(ws, pack: FactPack, price_data_ws=None) -> None:
     if pack.subsidiaries:
         for offset, subsidiary in enumerate(pack.subsidiaries[:5], start=0):
             row = subsidiary_header_row + 1 + offset
+            subsidiary_financials = []
+            for label, short_label in (("매출액(공시 표기)", "매출"), ("당기순이익(공시 표기)", "순이익")):
+                value = str(subsidiary.get(label, "")).strip()
+                if value and value not in {"확인 필요", "N/A", "nan", "None"}:
+                    subsidiary_financials.append(f"{short_label} {value}")
+            financial_note = ""
+            if subsidiary_financials:
+                unit = str(subsidiary.get("재무 단위", "공시 표기 단위")).strip() or "공시 표기 단위"
+                financial_note = f"요약재무({unit}): {' / '.join(subsidiary_financials)}"
             values = [
                 subsidiary.get("사업군", "확인 필요"),
                 subsidiary.get("자회사명", "확인 필요"),
                 subsidiary.get("지분율", "확인 필요"),
-                " · ".join(value for value in [subsidiary.get("사업영역", ""), subsidiary.get("비고", "")] if value) or "확인 필요",
+                " · ".join(value for value in [subsidiary.get("사업영역", ""), financial_note, subsidiary.get("비고", "")] if value) or "확인 필요",
             ]
             for (start_col, end_col, _), value in zip(subsidiary_headers, values):
                 ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
@@ -787,10 +796,10 @@ def _write_price_sheet(ws, pack: FactPack) -> None:
 
 def _write_subsidiary_sheet(ws, pack: FactPack) -> None:
     ws.title = "자회사 등"
-    headers = ["사업군", "자회사명", "지분율", "사업영역", "소재지", "자산(공시 표기)", "매출액(공시 표기)", "당기순이익(공시 표기)", "주요 생산시설 또는 핵심 역량", "비고", "출처 문서", "출처일", "출처 위치", "출처 URL"]
+    headers = ["사업군", "자회사명", "지분율", "사업영역", "소재지", "자산(공시 표기)", "매출액(공시 표기)", "당기순이익(공시 표기)", "재무 단위", "주요 생산시설 또는 핵심 역량", "비고", "출처 문서", "출처일", "출처 위치", "출처 URL"]
     _apply_table_header(ws, 2, headers)
     if not pack.subsidiaries:
-        ws.merge_cells("A3:N3")
+        ws.merge_cells("A3:O3")
         ws["A3"] = "자동 추출 대상 공시가 확보되지 않았습니다. 사업보고서 주석 확인 필요"
         ws["A3"].alignment = LEFT_WRAP
     else:
@@ -798,8 +807,8 @@ def _write_subsidiary_sheet(ws, pack: FactPack) -> None:
             for col, header in enumerate(headers, start=1):
                 ws.cell(row, col, subsidiary.get(header, "확인 필요"))
     ws.freeze_panes = "A3"
-    ws.auto_filter.ref = f"A2:N{max(ws.max_row, 3)}"
-    for col, width in enumerate([18, 24, 10, 24, 18, 16, 16, 18, 44, 24, 32, 14, 34, 60], start=1):
+    ws.auto_filter.ref = f"A2:O{max(ws.max_row, 3)}"
+    for col, width in enumerate([18, 24, 10, 24, 18, 16, 16, 18, 14, 44, 24, 32, 14, 34, 60], start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
